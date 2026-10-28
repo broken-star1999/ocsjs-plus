@@ -1,0 +1,32 @@
+name: Verify OCS Plus
+
+on:
+  push:
+    branches: ['feat/ai-answerer']
+  pull_request:
+    branches: ['5.0']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ocsjs-plus-userscript
+          path: |
+            dist/ocs.user.js
+            dist/ocs.common.user.js
+          if-no-files-found: error

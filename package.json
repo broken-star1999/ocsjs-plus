@@ -1,7 +1,7 @@
 {
-	"name": "ocsjs",
+	"name": "ocsjs-plus",
 	"version": "5.2.3",
-	"description": "ocs - online course script 在线网络课程辅助工具",
+	"description": "OCS Plus - 基于 OCS 的可扩展网课助手",
 	"types": "./lib/src/core/index.d.ts",
 	"main": "./lib/src/core/index.js",
 	"files": [
@@ -9,6 +9,7 @@
 		"dist"
 	],
 	"scripts": {
+		"prebuild": "tsc -p packages/utils/tsconfig.json",
 		"dev": "gulp -f ./scripts/dev-core.js & npm run changelog:simplify",
 		"build": "gulp -f ./scripts/build-core.js",
 		"tsc": "pnpm lint && gulp -f ./scripts/tsc.js",
@@ -18,13 +19,16 @@
 		"pub:minor": "npm version minor && pnpm build:core && npm publish",
 		"pub:major": "npm version major && pnpm build:core && npm publish",
 		"changelog:simplify": "gulp -f ./scripts/simplify_changelog.js",
-		"test": "tsx tests/resolver.test.ts",
+		"test": "tsx tests/resolver.test.ts && tsx --import ./tests/setup-browser-env.ts tests/ai.test.ts",
+		"test:ai": "tsx --import ./tests/setup-browser-env.ts tests/ai.test.ts",
+		"preview:ai": "node tests/preview-ai.cjs",
 		"test:eus": "pnpm -C A:/VSCode/code/eus build && pnpm -C packages/core link A:/VSCode/code/eus && pnpm -C packages/scripts link A:/VSCode/code/eus && npm run build",
 		"test:eus:reset": "pnpm install -w && cd packages/scripts && pnpm install",
 		"test:answerer": "tsx --import ./tests/setup-browser-env.ts tests/answerer.test.ts",
 		"build:style": "node scripts/build-style.js",
 		"watch:style": "node scripts/build-style.js --watch"
 	},
+	"packageManager": "pnpm@10.30.3",
 	"devDependencies": {
 		"@html-eslint/eslint-plugin": "^0.15.0",
 		"@types/node": "^17.0.45",
@@ -51,7 +55,7 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/ocsjs/ocsjs.git"
+		"url": "git+https://github.com/broken-star1999/ocsjs-plus.git"
 	},
 	"keywords": [
 		"ocs",
@@ -66,9 +70,9 @@
 	"author": "enncy",
 	"license": "MIT",
 	"bugs": {
-		"url": "https://github.com/ocsjs/ocsjs/issues"
+		"url": "https://github.com/broken-star1999/ocsjs-plus/issues"
 	},
-	"homepage": "https://github.com/ocsjs/ocsjs#readme",
+	"homepage": "https://github.com/broken-star1999/ocsjs-plus#readme",
 	"dependencies": {
 		"@microsoft/tsdoc": "^0.14.2"
 	},

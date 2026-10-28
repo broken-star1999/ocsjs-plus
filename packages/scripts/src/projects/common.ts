@@ -1,13 +1,18 @@
+/* global GM_getValue, GM_setValue, GM_deleteValue */
 import debounce from 'lodash/debounce';
 import {
 	defaultAnswerWrapperHandler,
 	AnswerWrapperParser,
 	SimplifyWorkResult,
 	WorkUploadType,
-	AnswerWrapperHandlerConfig
+	AnswerWrapperHandlerConfig,
+	getAIKeyStorage,
+	listAIModels,
+	normalizeAIEndpoint,
+	AIModel,
+	AnswererWrapper
 } from '@ocsjs/core';
 import { $message, h, $gm, $store, Project, Script, $modal, $ui, MessageElement, cors } from 'easy-us';
-import type { AnswererWrapper } from '@ocsjs/core';
 import { CXProject, ICourseProject, IcveMoocProject, YKTProject, ZHSProject, ZJYProject } from '../index';
 import { BackgroundProject } from './background';
 import { enableCopy } from '../utils';
@@ -92,6 +97,7 @@ const count = (results: SimplifyWorkResult[]) => ({
  * 接入全局设置的题库缓存开关（与 searchAnswerInCaches 读取侧语义一致：仅显式关闭时跳过）。
  */
 const cacheIfFinished = (result: SimplifyWorkResult) => {
+	if (CommonProject.scripts.settings.cfg.aiEnabled) return;
 	if (CommonProject.scripts.settings.cfg.enableQuestionCaches === false) {
 		return;
 	}
@@ -216,9 +222,167 @@ export const CommonProject = Project.create({
 				notes: {
 					defaultValue: $ui.notes([
 						'✨鼠标移动到按钮或者输入框，可以看到提示！',
-						'想要自动答题必须设置 “题库配置” ',
+						'在下方填写 AI 接口地址、模型和密钥，即可使用 AI 答题。关闭 AI 后可使用原有题库。',
+						'题目和选项将发送到你填写的 AI 服务；答案需自行核对。',
 						'设置后进入章节测试，作业，考试页面即可自动答题。'
 					]).outerHTML
+				},
+				aiEnabled: {
+					enableForAttribute: true,
+					separator: 'AI 答题（OpenAI 兼容接口）',
+					label: '使用 AI 替代题库',
+					attrs: { type: 'checkbox' },
+					defaultValue: true
+				},
+				aiEndpoint: {
+					enableForAttribute: true,
+					label: 'AI 接口地址',
+					defaultValue: 'https://api.deepseek.com',
+					attrs: {
+						placeholder: 'https://api.deepseek.com',
+						title: '默认 DeepSeek，也支持其他 OpenAI 兼容接口。每个接口分别保存密钥。'
+					}
+				},
+				aiModels: { defaultValue: [] as AIModel[] },
+				aiModelsEndpoint: { defaultValue: '' },
+				aiModel: {
+					enableForAttribute: true,
+					label: 'AI 模型',
+					tag: 'select',
+					defaultValue: '',
+					options: [['', '请先保存密钥并获取模型列表']],
+					onload() {
+						const select = this;
+						const settings = CommonProject.scripts.settings;
+						const render = () => {
+							select.replaceChildren(
+								h('option', { value: '', text: '请选择模型' }),
+								...settings.cfg.aiModels.map((model) =>
+									h('option', {
+										value: model.id,
+										text:
+											model.name +
+											(model.name !== model.id ? ` (${model.id})` : '') +
+											(model.vision ? ' · 支持图片' : '')
+									})
+								)
+							);
+							select.value = settings.cfg.aiModel;
+						};
+						render();
+						const listeners: (number | void)[] = [];
+						const listener = () => {
+							if (!select.isConnected) listeners.forEach((id) => settings.offConfigChange(id));
+							else render();
+						};
+						listeners.push(settings.onConfigChange('aiModels', listener), settings.onConfigChange('aiModel', listener));
+					}
+				},
+				aiModelsStatus: {
+					sync: true,
+					label: '模型列表状态',
+					defaultValue: '保存密钥后自动获取模型',
+					attrs: { readOnly: true, title: '模型列表通过当前接口的 /models 获取' }
+				},
+				aiModelsButton: {
+					label: '获取模型列表',
+					defaultValue: '获取 / 刷新模型列表',
+					attrs: { type: 'button' },
+					onload() {
+						this.onclick = async () => {
+							this.disabled = true;
+							try {
+								await CommonProject.scripts.settings.methods.refreshAIModels();
+							} finally {
+								this.disabled = false;
+							}
+						};
+					}
+				},
+				aiVision: {
+					enableForAttribute: true,
+					label: 'AI 识图（需模型支持）',
+					attrs: { type: 'checkbox', title: '开启后发送题目图片；同时需要开启高级设置中的图片题优化' },
+					defaultValue: false,
+					onload() {
+						const input = this as HTMLInputElement;
+						const settings = CommonProject.scripts.settings;
+						const listener = settings.onConfigChange('aiVision', (enabled) => {
+							if (input.isConnected) input.checked = enabled;
+							else settings.offConfigChange(listener);
+						});
+					}
+				},
+				aiKeyButton: {
+					label: 'AI 密钥',
+					defaultValue: '设置 / 更换密钥',
+					attrs: { type: 'button' },
+					onload() {
+						this.onclick = () => {
+							let keyStorage: string;
+							try {
+								keyStorage = getAIKeyStorage(CommonProject.scripts.settings.cfg.aiEndpoint);
+							} catch {
+								$message.warn('请先填写有效的 AI 接口地址');
+								return;
+							}
+							const input = h('input', {
+								type: 'password',
+								autocomplete: 'new-password',
+								placeholder: GM_getValue(keyStorage, '')
+									? '当前接口已有密钥，留空保留'
+									: '输入 API Key（本地服务可留空）',
+								style: { width: '100%' }
+							});
+							$modal.confirm({
+								title: '设置 AI 密钥',
+								content: h('div', [
+									h('p', '密钥单独保存于脚本管理器存储中，不写入源码和题库配置。请使用自己的可信接口。'),
+									input,
+									h('button', '清除已存密钥', (button) => {
+										button.onclick = () => {
+											GM_deleteValue(keyStorage);
+											input.value = '';
+											input.placeholder = '密钥已清除';
+										};
+									})
+								]),
+								async onConfirm() {
+									if (input.value.trim()) GM_setValue(keyStorage, input.value.trim());
+									input.value = '';
+									$message.success('密钥已保存，正在获取模型列表');
+									await CommonProject.scripts.settings.methods.refreshAIModels();
+								}
+							});
+						};
+					}
+				},
+				aiTestButton: {
+					label: 'AI 连通测试',
+					defaultValue: '发送测试题（会调用一次接口）',
+					attrs: { type: 'button' },
+					onload() {
+						this.onclick = async () => {
+							this.disabled = true;
+							try {
+								const settings = CommonProject.scripts.settings.methods.getWorkOptions();
+								if (!settings.aiEnabled) throw new Error('请先开启 AI 答题');
+								const infos = await defaultAnswerWrapperHandler(settings.answererWrappers, {
+									title: '1 + 1 等于多少？',
+									options: '1\n2\n3\n4',
+									type: 'single'
+								});
+								$modal.alert({
+									title: 'AI 测试结果',
+									content: h('div', infos[0]?.error || '接口返回：' + (infos[0]?.results[0]?.answer || '无答案'))
+								});
+							} catch (error) {
+								$modal.alert({ content: h('div', error instanceof Error ? error.message : '测试失败') });
+							} finally {
+								this.disabled = false;
+							}
+						};
+					}
 				},
 				answererWrappers: {
 					separator: '自动答题设置',
@@ -240,7 +404,7 @@ export const CommonProject = Project.create({
 				},
 
 				answererWrappersButton: {
-					label: '题库配置',
+					label: '原题库配置（关闭 AI 时生效）',
 					defaultValue: '点击配置',
 					attrs: {
 						type: 'button'
@@ -810,7 +974,7 @@ export const CommonProject = Project.create({
 				upload: {
 					label: '答案提交方式（提交率）',
 					tag: 'select',
-					defaultValue: 80 as WorkUploadType,
+					defaultValue: 'save' as WorkUploadType,
 					options: [
 						[
 							'save',
@@ -1033,13 +1197,52 @@ export const CommonProject = Project.create({
 				}
 			},
 			methods() {
+				let modelRequestId = 0;
 				return {
+					invalidateAIModels: () => {
+						modelRequestId++;
+					},
+					refreshAIModels: async (): Promise<void> => {
+						const requestId = ++modelRequestId;
+						const endpoint = this.cfg.aiEndpoint;
+						this.cfg.aiModelsStatus = '正在获取模型列表…';
+						try {
+							const models = await listAIModels(endpoint);
+							if (requestId !== modelRequestId || endpoint !== this.cfg.aiEndpoint) return;
+							this.cfg.aiModelsEndpoint = normalizeAIEndpoint(endpoint);
+							this.cfg.aiModels = models;
+							if (!models.some((model) => model.id === this.cfg.aiModel)) this.cfg.aiModel = models[0].id;
+							this.cfg.aiModelsStatus = `已获取 ${models.length} 个模型，可在上方下拉选择`;
+						} catch (error) {
+							if (requestId !== modelRequestId || endpoint !== this.cfg.aiEndpoint) return;
+							this.cfg.aiModels = [];
+							this.cfg.aiModel = '';
+							this.cfg.aiModelsStatus = error instanceof Error ? error.message : '获取模型列表失败';
+						}
+					},
 					/**
 					 * 获取自动答题配置，包括题库配置
 					 */
 					getWorkOptions: () => {
 						// 使用 json 深拷贝，防止修改原始配置
 						const workOptions: typeof this.cfg = JSON.parse(JSON.stringify(this.cfg));
+						if (workOptions.aiEnabled) {
+							const selected = workOptions.aiModels.find((model) => model.id === workOptions.aiModel);
+							if (selected?.vision === false) workOptions.aiVision = false;
+							// Virtual native adapter: keeps all platform workers on their existing answerer path.
+							workOptions.answererWrappers = [
+								{
+									name: 'AI · ' + workOptions.aiModel,
+									url: workOptions.aiEndpoint,
+									method: 'post',
+									type: 'GM_xmlhttpRequest',
+									headers: {},
+									handler: '',
+									ai: { endpoint: workOptions.aiEndpoint, model: workOptions.aiModel, vision: workOptions.aiVision }
+								}
+							];
+							return workOptions;
+						}
 
 						/**
 						 * 过滤掉被禁用的题库
@@ -1080,6 +1283,26 @@ export const CommonProject = Project.create({
 			},
 			// 实时更新内部设置
 			oncomplete() {
+				const updateVision = () => {
+					const selected = this.cfg.aiModels.find((model) => model.id === this.cfg.aiModel);
+					if (selected?.vision !== undefined) this.cfg.aiVision = selected.vision;
+				};
+				this.onConfigChange('aiModel', updateVision);
+				this.onConfigChange('aiEndpoint', () => {
+					this.methods.invalidateAIModels();
+					this.cfg.aiModels = [];
+					this.cfg.aiModel = '';
+					this.cfg.aiModelsEndpoint = '';
+					this.cfg.aiVision = false;
+					this.cfg.aiModelsStatus = '接口已更改，请保存该接口的密钥或获取模型列表';
+				});
+				if (self === top && this.cfg.aiEnabled && this.cfg.aiModels.length === 0) {
+					try {
+						if (GM_getValue(getAIKeyStorage(this.cfg.aiEndpoint), '')) this.methods.refreshAIModels();
+					} catch {
+						/* Invalid addresses are reported when fetching/testing. */
+					}
+				}
 				AnswerWrapperHandlerConfig.timeout_seconds = this.cfg.answerWrapperHandlerTimeout;
 				this.onConfigChange('answerWrapperHandlerTimeout', (sec) => {
 					AnswerWrapperHandlerConfig.timeout_seconds = sec;
@@ -1095,6 +1318,11 @@ export const CommonProject = Project.create({
 				// 2. 配置签名记忆——用户手动关闭后记录当前题库签名到 imageOptimizeWarnRecords，
 				//    同配置下不再弹出，仅当题库配置变化（签名改变）时才重新提示。
 				const checkImageOptimizeCompatibility = () => {
+					if (this.cfg.aiEnabled) {
+						state.setting.imageOptimizeMessage?.remove();
+						state.setting.imageOptimizeMessage = undefined;
+						return;
+					}
 					if (self !== top) {
 						return;
 					}
@@ -1135,6 +1363,7 @@ export const CommonProject = Project.create({
 
 				checkImageOptimizeCompatibility();
 				this.onConfigChange('imageOptimize', () => checkImageOptimizeCompatibility());
+				this.onConfigChange('aiEnabled', () => checkImageOptimizeCompatibility());
 				this.onConfigChange('answererWrappers', () => checkImageOptimizeCompatibility());
 			}
 		}).withEvents<{ 'answerer-wrapper-change': (curr: AnswererWrapper[], pre: AnswererWrapper[]) => void }>(),
@@ -1445,7 +1674,8 @@ export const CommonProject = Project.create({
 				});
 				CommonProject.scripts.workResults.on('work-current-result-change', (cur) => {
 					if (cur.searching) {
-						if (working_msg) working_msg.innerHTML = loadingSpinSvg + ` 正在搜题 ${formatQuestionForMessage(cur.question)}`;
+						if (working_msg)
+							working_msg.innerHTML = loadingSpinSvg + ` 正在搜题 ${formatQuestionForMessage(cur.question)}`;
 					}
 				});
 			}
@@ -1459,7 +1689,7 @@ export const CommonProject = Project.create({
 			namespace: 'common.online-search',
 			configs: {
 				notes: {
-					defaultValue: '查题前请在 “通用-全局设置” 中设置题库配置，才能进行在线搜题。'
+					defaultValue: '查题前请在 “通用-全局设置” 中设置 AI 接口或题库。'
 				},
 
 				selectSearch: {
@@ -1500,7 +1730,8 @@ export const CommonProject = Project.create({
 				});
 
 				const search = async (value: string) => {
-					if (CommonProject.scripts.settings.cfg.answererWrappers.length === 0) {
+					const wrappers = CommonProject.scripts.settings.methods.getWorkOptions().answererWrappers;
+					if (wrappers.length === 0) {
 						$modal.alert({ content: '请先在 通用-全局设置 配置题库，才能进行在线搜题。' });
 						return;
 					}
@@ -1513,7 +1744,7 @@ export const CommonProject = Project.create({
 							title: value,
 							enableImageOptimize: CommonProject.scripts.settings.cfg.imageOptimize
 						});
-						const infos = await defaultAnswerWrapperHandler(CommonProject.scripts.settings.cfg.answererWrappers, env);
+						const infos = await defaultAnswerWrapperHandler(wrappers, env);
 						// 耗时计算
 						const resume = ((Date.now() - t) / 1000).toFixed(2);
 

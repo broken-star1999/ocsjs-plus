@@ -45,11 +45,8 @@ const infos = GM_info;
 			renderScript: RenderScript,
 			styles: [STYLE],
 			defaultPanelName: CommonProject.scripts.guide.namespace,
-			title: `${logoSvg} OCS 全域名通用版 <span style="font-size: 12px; color: #969696;">v${infos.script.version}</span>`
+			title: `${logoSvg} OCS Plus 全域名通用版 <span style="font-size: 12px; color: #969696;">v${infos.script.version}</span>`
 		},
-		updatePage:
-			GM_info.scriptHandler === 'Tampermonkey'
-				? 'https://greasyfork.org/zh-CN/scripts/481438'
-				: 'https://scriptcat.org/zh-CN/script-show-page/1398'
+		updatePage: 'https://github.com/broken-star1999/ocsjs-plus/releases'
 	});
 })();

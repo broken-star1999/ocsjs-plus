@@ -352,7 +352,7 @@ export const CXProject = Project.create({
 				}
 			},
 			onrender({ panel }) {
-				if (!CommonProject.scripts.settings.cfg.answererWrappers?.length) {
+				if (!CommonProject.scripts.settings.methods.getWorkOptions().answererWrappers.length) {
 					answerWrapperEmptyWarning(10);
 				}
 

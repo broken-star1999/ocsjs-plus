@@ -39,7 +39,7 @@ async function createUserJs() {
 
 	/** 先编译样式（easy-us 基础样式 + OCS 自定义样式），保证 style.css 为最新 */
 	await buildStyle();
-	const CSS_PATH = path.join(__dirname, '../packages/scripts/assets/css/style.css')
+	const CSS_PATH = path.join(__dirname, '../packages/scripts/assets/css/style.css');
 
 	// @ts-ignore
 	globalThis.unsafeWindow = {};
@@ -76,23 +76,31 @@ async function createUserJs() {
 				gap: '\t'.repeat(4)
 			},
 			metadata: {
-				name: 'OCS 网课助手',
+				name: 'OCS Plus 网课助手',
 				version: version,
 				description: [
-					'OCS(online-course-script) 网课助手，官网 https://docs.ocsjs.com ，专注于帮助大学生从网课中释放出来',
-					'让自己的时间把握在自己的手中，拥有人性化的操作页面，流畅的步骤提示，支持 ',
+					'OCS Plus 网课助手，基于 OCS 扩展，支持 OpenAI 兼容接口 AI 答题及自动获取模型列表。',
+					'项目 https://github.com/broken-star1999/ocsjs-plus ，支持 ',
 					projectList,
 					'等网课的学习，作业。具体的功能请查看脚本悬浮窗中的教程页面。'
 				].join(' '),
 				author: 'enncy',
 				license: 'MIT',
-				namespace: 'https://enncy.cn',
-				homepage: 'https://docs.ocsjs.com',
-				source: 'https://github.com/ocsjs/ocsjs',
+				namespace: 'https://github.com/broken-star1999/ocsjs-plus',
+				homepage: 'https://github.com/broken-star1999/ocsjs-plus',
+				source: 'https://github.com/broken-star1999/ocsjs-plus',
 				icon: 'https://cdn.ocsjs.com/logo.png',
-				connect: ['enncy.cn', 'icodef.com', 'ocsjs.com', 'zaizhexue.top', 'localhost', '127.0.0.1',
+				connect: [
+					'*',
+					'enncy.cn',
+					'icodef.com',
+					'ocsjs.com',
+					'zaizhexue.top',
+					'localhost',
+					'127.0.0.1',
 					// 智慧树阿里云资源，应用： 图片题资源访问
-					'aliyuncs.com'],
+					'aliyuncs.com'
+				],
 				match: matchMetadata,
 				grant: [
 					'GM_info',
@@ -135,10 +143,7 @@ async function createUserJs() {
 	devOpts.entry = path.join(__dirname, '../packages/scripts/entry.dev.js');
 	devOpts.dist = path.join(distResolvedPath, 'ocs.dev.user.js');
 	/** 导出样式文件 */
-	fs.copyFileSync(
-		CSS_PATH,
-		path.join(distResolvedPath, 'style.css')
-	);
+	fs.copyFileSync(CSS_PATH, path.join(distResolvedPath, 'style.css'));
 	console.log('createUserScript: ', devOpts.metadata.name, devOpts.dist);
 	await createUserScript(devOpts);
 

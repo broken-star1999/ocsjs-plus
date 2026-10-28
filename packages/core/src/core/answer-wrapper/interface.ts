@@ -25,6 +25,8 @@ export interface SearchInformation {
  * 题库配置器
  */
 export interface AnswererWrapper {
+	/** Native AI adapter configuration. API keys are never stored in wrappers. */
+	ai?: import('./ai').AIAnswererConfig;
 	/** 答题器请求路径 */
 	url: string;
 	/** 题库名字 */

@@ -2,13 +2,15 @@ import { SimplifyWorkResult, splitAnswer, $, QuestionTypes } from '@ocsjs/core';
 import { $ui, h } from 'easy-us';
 import { createQuestionTitleExtra } from '../utils';
 import { createAccordionCard } from '../utils/ui';
+import DOMPurify from 'dompurify';
 
 /**
  * 图片链接正则
  * 含 query string 与 fragment，避免 URL 被截断（如带 ?response-content-disposition=... 的鉴权链接）
  * 排除空白/引号/</CJK，避免跨越标签或吞掉相邻中文
  */
-const IMG_LINK_RE = /https?:\/\/[^"'<\s一-鿿]+?\.(?:png|jpe?g|gif|bmp|webp|svg)(?:\?[^\s"'<>一-鿿]*)?(?:#[^\s"'<>一-鿿]*)?/g;
+const IMG_LINK_RE =
+	/https?:\/\/[^"'<\s一-鿿]+?\.(?:png|jpe?g|gif|bmp|webp|svg)(?:\?[^\s"'<>一-鿿]*)?(?:#[^\s"'<>一-鿿]*)?/g;
 
 /**
  * 判断是否有图片链接，如果有则使用 <img> 标签包裹，但如果已经被 <img> 包裹则不处理
@@ -38,10 +40,7 @@ const transformImgLinkOfQuestion = (question: string) => {
  * 图片题的题干就是图片 URL，同一张图在不同场景下可能返回 http 或 https 协议，
  * 但属于同一道题、应折叠去重，因此先统一抹平协议前缀再剔除非字母数字字符。
  */
-const normalizeQuestion = (question: string) =>
-	question
-		.replace(/https?:\/\//gi, '//')
-		.replace(/[^\p{L}\p{N}]/gu, '');
+const normalizeQuestion = (question: string) => question.replace(/https?:\/\//gi, '//').replace(/[^\p{L}\p{N}]/gu, '');
 
 /**
  * 搜索结果元素
@@ -114,7 +113,9 @@ export class SearchInfosElement extends HTMLElement {
 							const title = transformImgLinkOfQuestion(ans[0] || this.question || '无');
 							// 先按答案分隔符拆分原始答案，再逐段转换图片：
 							// 反之若先转换，img 标签的 src 中 & 被转义为 &amp;，其分号会被 splitAnswer 的 ';' 分隔符误切
-							const answer = splitAnswer(ans[1] || '无').map((a) => transformImgLinkOfQuestion(a));
+							const aiData = ans[2] as { ai_native?: boolean; answers?: string[] } | undefined;
+							const parts = aiData?.ai_native && aiData.answers ? aiData.answers : splitAnswer(ans[1] || '无');
+							const answer = parts.map((a) => transformImgLinkOfQuestion(a));
 							/** 返回的题目和原题完全匹配时，不再重复显示题目 */
 							const isSameQuestion = normalizeQuestion(ans[0] || '') === normalizeQuestion(this.question || '');
 							const extra_data = JSON.parse(JSON.stringify(ans[2] || {}));
@@ -156,7 +157,9 @@ export class SearchInfosElement extends HTMLElement {
 												)
 										  )
 										: []),
-									...answer.map((a) => h('code', { innerHTML: a }))
+									...answer.map((a, index) =>
+										h('code', aiData?.ai_native ? { textContent: parts[index] } : { innerHTML: DOMPurify.sanitize(a) })
+									)
 								])
 							]);
 						})

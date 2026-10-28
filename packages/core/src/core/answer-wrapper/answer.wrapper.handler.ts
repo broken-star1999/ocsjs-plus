@@ -1,5 +1,6 @@
 import { AnswererWrapper, SearchInformation, Result } from './interface';
 import { request } from '../utils/request';
+import { searchAIAnswer } from './ai';
 import { $ } from '../../utils';
 
 export const AnswerWrapperHandlerConfig = {
@@ -83,6 +84,16 @@ export async function defaultAnswerWrapperHandler(
 	// 多线程请求
 	await Promise.all(
 		temp.map(async (wrapper) => {
+			if (wrapper.ai) {
+				searchInfos.push(
+					await searchAIAnswer(
+						wrapper.ai,
+						{ ...env, title: env.title || '' },
+						AnswerWrapperHandlerConfig.timeout_seconds * 1000
+					)
+				);
+				return;
+			}
 			// 解构数据，并赋初始值
 			const {
 				name = '未知题库',

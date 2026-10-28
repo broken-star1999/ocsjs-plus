@@ -45,8 +45,8 @@ const infos = GM_info;
 			renderScript: RenderScript,
 			styles: [STYLE],
 			defaultPanelName: CommonProject.scripts.guide.namespace,
-			title: `${logoSvg} OCS <span style="font-size: 12px; color: #969696;">v${infos.script.version}</span>`
+			title: `${logoSvg} OCS Plus <span style="font-size: 12px; color: #969696;">v${infos.script.version}</span>`
 		},
-		updatePage: 'https://docs.ocsjs.com/docs/update'
+		updatePage: 'https://github.com/broken-star1999/ocsjs-plus/releases'
 	});
 })();

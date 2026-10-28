@@ -478,7 +478,7 @@ export const answerWrapperEmptyWarning = cors.defineTopFunction((duration: numbe
 
 	answererWrapperUnsetMessage?.remove();
 	answererWrapperUnsetMessage = $message.warn({
-		content: h('span', {}, ['你还没设置题库，无法自动答题，请切换到 ', setting, ' 页面进行配置。']),
+		content: h('span', {}, ['请先配置 AI 接口或题库，切换到 ', setting, ' 页面进行配置。']),
 		duration: duration
 	});
 });
@@ -523,7 +523,7 @@ export function createCommonAnswerer(options: {
 		}
 		const titleImages = titleResult.images;
 
-		return await BackgroundProject.scripts.data.methods.searchAnswerInCaches(title, async () => {
+		const search = async () => {
 			await $.sleep((options.period ?? 3) * 1000);
 			const optResult = normalize(
 				options.optionsTransform
@@ -573,6 +573,12 @@ export function createCommonAnswerer(options: {
 			if (imageUrls.length) {
 				for (const info of searchInfos) {
 					for (const res of info.results) {
+						const data = res.extra_data as { ai_native?: boolean; answers?: string[] } | undefined;
+						if (data?.ai_native && data.answers) {
+							data.answers = data.answers.map((answer) =>
+								answer.replace(/\[图片(\d+)\]/g, (m, n) => imageUrls[Number(n) - 1] ?? m)
+							);
+						}
 						if (res.answer && res.answer.includes('[图片')) {
 							res.answer = res.answer.replace(/\[图片(\d+)\]/g, (m, n) => imageUrls[Number(n) - 1] ?? m);
 						}
@@ -580,7 +586,12 @@ export function createCommonAnswerer(options: {
 				}
 			}
 			return searchInfos;
-		});
+		};
+		// Upstream cache keys only contain the title; AI also depends on options/model/images.
+		// Bypass that cache to prevent an old answer or another course's options being reused.
+		return options.answererWrappers.some((wrapper) => wrapper.ai)
+			? search()
+			: BackgroundProject.scripts.data.methods.searchAnswerInCaches(title, search);
 	};
 }
 

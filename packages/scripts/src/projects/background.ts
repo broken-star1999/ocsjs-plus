@@ -98,7 +98,6 @@ function onDevtoolsOpen(callback: () => void) {
 		const heightDiff = window.outerHeight - window.innerHeight;
 		if (widthDiff > 160 || heightDiff > 160) {
 			trigger();
-			
 		}
 	}, 1000);
 }
@@ -606,9 +605,9 @@ export const BackgroundProject = Project.create({
 					defaultValue: '脚本自动更新模块，如果有新的版本会自动通知。'
 				},
 				autoNotify: {
-					defaultValue: true,
+					defaultValue: false,
 					label: '开启更新通知',
-					attrs: { type: 'checkbox', title: '当有最新的版本时自动弹窗通知，默认开启' }
+					attrs: { type: 'checkbox', title: '上游版本更新提醒。Plus 版本默认关闭，可在本仓库查看更新。' }
 				},
 				notToday: {
 					defaultValue: -1
