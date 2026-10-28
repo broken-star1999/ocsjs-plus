@@ -858,8 +858,7 @@ function createYktAnswerWorker({
 				if (ctx.type === 'completion') {
 					return '';
 				}
-				const items = (elements.options ?? []).map((o: HTMLElement) => optionText(o));
-				return { text: items.join('\n'), items };
+				return (elements.options ?? []).map((o: HTMLElement) => optionText(o)).join('\n');
 			},
 			answererWrappers,
 			period

@@ -912,7 +912,6 @@ function workOrExam(
 				if (type === 'completion') return '';
 				const optResults = (ctx.elements.options ?? []).filter(Boolean).map((o: any) => extractTextWithImages(o));
 				return {
-					items: optResults.map((r: { text: string }) => r.text),
 					text: optResults.map((r) => r.text).join('\n'),
 					images: optResults.flatMap((r) => r.images)
 				};
@@ -2038,11 +2037,7 @@ const JobRunner = {
 					ctx.type = type as any;
 					if (type === 'completion') return '';
 					const optResults = (ctx.elements.options ?? []).filter(Boolean).map((o: any) => extractTextWithImages(o));
-					return {
-						items: optResults.map((r: { text: string }) => r.text),
-						text: optResults.map((r) => r.text).join('\n'),
-						images: optResults.flatMap((r) => r.images)
-					};
+					return { text: optResults.map((r) => r.text).join('\n'), images: optResults.flatMap((r) => r.images) };
 				},
 				answererWrappers,
 				period

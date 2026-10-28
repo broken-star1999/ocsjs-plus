@@ -500,16 +500,13 @@ export const closeAnswerWrapperEmptyWarning = cors.defineTopFunction(() => {
  */
 export function createCommonAnswerer(options: {
 	titleTransform: (elements: any, ctx: WorkContext<any>) => string | { text: string; images?: string[] };
-	optionsTransform?: (
-		elements: any,
-		ctx: WorkContext<any>
-	) => string | { text: string; images?: string[]; items?: string[] };
+	optionsTransform?: (elements: any, ctx: WorkContext<any>) => string | { text: string; images?: string[] };
 	answererWrappers: AnswererWrapper[];
 	period?: number;
 }) {
 	const normalize = (
-		v: string | { text: string; images?: string[]; items?: string[] } | undefined
-	): { text: string; images?: string[]; items?: string[] } => {
+		v: string | { text: string; images?: string[] } | undefined
+	): { text: string; images?: string[] } => {
 		if (v == null) return { text: '' };
 		return typeof v === 'string' ? { text: v } : v;
 	};
@@ -532,13 +529,10 @@ export function createCommonAnswerer(options: {
 			const optResult = normalize(
 				options.optionsTransform
 					? options.optionsTransform(elements, ctx)
-					: {
-							items: (ctx.elements.options ?? []).map((o) => o?.innerText || ''),
-							text: (ctx.elements.options ?? [])
-								.filter(Boolean)
-								.map((o: HTMLElement | undefined) => o!.innerText)
-								.join('\n')
-					  }
+					: (ctx.elements.options ?? [])
+							.filter(Boolean)
+							.map((o: HTMLElement | undefined) => o!.innerText)
+							.join('\n')
 			);
 			const questionHasImages =
 				(titleImages?.length ?? 0) + (optResult.images?.length ?? 0) > 0 ||
@@ -556,13 +550,6 @@ export function createCommonAnswerer(options: {
 				type: ctx.type,
 				title,
 				options: optResult.text,
-				// Keep positions aligned with the elements later passed to the click handler.
-				optionItems:
-					(ctx.type === 'single' || ctx.type === 'multiple') &&
-					optResult.items?.length === ctx.elements.options?.length &&
-					ctx.elements.options?.every(Boolean)
-						? optResult.items
-						: undefined,
 				titleImages,
 				optionsImages: optResult.images,
 				enableImageOptimize: CommonProject.scripts.settings.cfg.imageOptimize

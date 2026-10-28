@@ -4,7 +4,6 @@ import {
 	normalizeAIEndpoint,
 	buildAIRequest,
 	parseAIAnswer,
-	parseAIResponse,
 	searchAIAnswer,
 	listAIModels
 } from '../packages/core/src/core/answer-wrapper/ai';
@@ -18,7 +17,6 @@ import {
 } from '../packages/core/src/core/answer-wrapper/ai-call-log';
 import { createAICallDetails } from '../packages/scripts/src/elements/ai-call-details';
 import { CustomOCSWorker, OCSWorker } from '../packages/core/src/core/worker/worker';
-import { buildAnswererEnv } from '../packages/scripts/src/utils/answerer-env';
 
 async function main() {
 	const config = { endpoint: 'https://example.com/v1/', model: 'test-model', vision: false };
@@ -38,30 +36,10 @@ async function main() {
 	assert.equal(buildAIRequest(config, question).model, 'test-model');
 	assert.equal(buildAIRequest(config, question).stream, false);
 	assert.match(String(buildAIRequest(config, question).messages[0].content), /思考内容.*简体中文/);
-	assert.match(String(buildAIRequest(config, question).messages[0].content), /图片编号无关/);
-	const structured = buildAIRequest(config, {
-		...question,
-		option_items: ['A. 第一行\n第二行', 'B. 相同', 'C. 相同', 'D. '],
-		suggestion_option_items: ['A. 第一行\n第二行', 'B. 相同', 'C. 相同', 'D. [图片5]']
-	});
-	assert.deepEqual(JSON.parse(String(structured.messages[1].content)).option_items, [
-		{ index: 0, text: 'A. 第一行\n第二行' },
-		{ index: 1, text: 'B. 相同' },
-		{ index: 2, text: 'C. 相同' },
-		{ index: 3, text: 'D. [图片5]' }
-	]);
-	assert.throws(() =>
-		buildAIRequest(config, { ...question, option_items: ['甲', '乙'], suggestion_option_items: ['甲'] })
-	);
-	// Deduplication for legacy question banks must not shift AI's DOM option positions.
-	const preserved = await buildAnswererEnv({
-		title: question.title,
-		type: 'single',
-		options: '甲\n甲\n乙',
-		optionItems: ['甲\n第二行', '甲\n第二行', '', '乙']
-	});
-	assert.deepEqual(preserved.env.option_items, ['甲\n第二行', '甲\n第二行', '', '乙']);
-	assert.deepEqual(preserved.env.suggestion_option_items, preserved.env.option_items);
+	assert.match(String(buildAIRequest(config, question).messages[0].content), /单选题只返回一个大写选项字母/);
+	assert.match(String(buildAIRequest(config, question).messages[0].content), /"answers":\["AC"\]/);
+	assert.match(String(buildAIRequest(config, question).messages[0].content), /判断题优先/);
+	assert.doesNotMatch(JSON.stringify(buildAIRequest(config, question)), /option_indices|option_items/);
 	assert.equal(
 		buildAIRequest({ ...config, endpoint: 'https://api.deepseek.com' }, question).response_format?.type,
 		'json_object'
@@ -75,6 +53,9 @@ async function main() {
 	);
 	assert.equal((vision.messages[1].content as any[])[1].image_url.url, 'data:image/png;base64,AA==');
 	assert.equal(parseAIAnswer('{"answers":["2"],"uncertain":false}', 'single'), '2');
+	assert.equal(parseAIAnswer('{"answers":["D"],"uncertain":false}', 'single'), 'D');
+	assert.equal(parseAIAnswer('{"answers":["AC"],"uncertain":false}', 'multiple'), 'AC');
+	assert.equal(parseAIAnswer('{"answers":["D"],"option_indices":[3],"uncertain":false}', 'unknown'), 'D');
 	assert.equal(parseAIAnswer('```json\n{"answers":["甲","乙"],"uncertain":false}\n```', 'multiple'), '甲#乙');
 	assert.equal(parseAIAnswer('{"answers":["false"],"uncertain":false}', 'judgement'), '错误');
 	assert.equal(parseAIAnswer('{"answers":[],"uncertain":true}'), undefined);
@@ -82,19 +63,6 @@ async function main() {
 	assert.throws(() => parseAIAnswer('{"answers":[{"code":"alert(1)"}],"uncertain":false}'));
 	assert.throws(() => parseAIAnswer('{"answers":["1","2"],"uncertain":false}', 'single'));
 	assert.throws(() => parseAIAnswer('{"answers":["2"]}'));
-	assert.deepEqual(parseAIResponse('{"answers":["公式"],"option_indices":[3],"uncertain":false}', 'single', 4), {
-		answers: ['公式'],
-		option_indices: [3]
-	});
-	for (const indices of [[4], [-1], [1.5], ['3'], [null], [], [0, 1], 'D']) {
-		assert.throws(() =>
-			parseAIResponse(JSON.stringify({ answers: ['公式'], option_indices: indices, uncertain: false }), 'single', 4)
-		);
-	}
-	assert.throws(() =>
-		parseAIResponse('{"answers":["甲","乙"],"option_indices":[1,1],"uncertain":false}', 'multiple', 4)
-	);
-	assert.throws(() => parseAIResponse('{"answers":["公式"],"option_indices":[3],"uncertain":false}', 'unknown'));
 
 	let sent: any;
 	const runtime = globalThis as any;
@@ -206,8 +174,7 @@ async function main() {
 		options: string[],
 		answers: string[],
 		responseFields: Record<string, unknown> = {},
-		envFields: Record<string, unknown> = {},
-		currentOptions = options
+		envFields: Record<string, unknown> = {}
 	) => {
 		runtime.GM_xmlhttpRequest = (request: any) =>
 			request.onload({
@@ -233,29 +200,51 @@ async function main() {
 				...envFields
 			}
 		);
-		const domClicks: number[] = [];
-		const elements = currentOptions.map((text, index) => {
-			const element = document.createElement('button');
-			element.innerText = text;
-			element.addEventListener('click', () => domClicks.push(index));
-			return element;
-		});
+		const elements = options.map((innerText) => ({ innerText })) as HTMLElement[];
 		const clicked: { answer: string; index: number }[] = [];
 		const resolver = createDefaultQuestionResolver({} as any)[type];
 		const result = await resolver(infos, elements, async (_type, answer, element) => {
-			element.click();
 			clicked.push({ answer, index: elements.indexOf(element) });
 		});
-		return { result, clicked, domClicks, infos };
+		return { result, clicked, infos };
 	};
-	assert.deepEqual((await solve('single', ['A. C', 'B. C#', 'C. C++'], ['C#'])).clicked, [{ answer: 'C#', index: 1 }]);
-	assert.equal((await solve('single', ['TCP', 'TCP/IP'], ['TCP 或 TCP/IP'])).result.finish, false);
-	assert.equal((await solve('single', ['甲', '甲'], ['甲'])).result.finish, false);
+	// Choice letters now use the original OCS resolvers; no AI-only option matcher.
 	assert.deepEqual(
-		(await solve('multiple', ['甲', '乙', '丙'], ['甲', '丙'])).clicked.map((item) => item.index),
+		(await solve('single', ['A. C', 'B. C#', 'C. C++'], ['B'])).clicked.map((item) => item.index),
+		[1]
+	);
+	assert.deepEqual(
+		(await solve('single', ['TCP', 'TCP/IP'], ['B'])).clicked.map((item) => item.index),
+		[1]
+	);
+	assert.deepEqual(
+		(await solve('multiple', ['甲', '乙', '丙'], ['AC'])).clicked.map((item) => item.index),
 		[0, 2]
 	);
-	assert.equal((await solve('multiple', ['甲', '乙'], ['甲', '不存在'])).clicked.length, 0);
+	// Explicit AI choice letters must take precedence over the same letters in
+	// option content; no partial clicks if any letter is out of range or invalid.
+	assert.deepEqual(
+		(await solve('single', ['A. B', 'B. A', 'C. C', 'D. D'], ['B'])).clicked.map((item) => item.index),
+		[1]
+	);
+	assert.deepEqual(
+		(await solve('multiple', ['A. C', 'B. D', 'C. A', 'D. B'], ['AB'])).clicked.map((item) => item.index),
+		[0, 1]
+	);
+	for (const answer of ['Z', 'AZ', 'AA', 'CA', 'A?', '答案是 A']) {
+		assert.equal((await solve('multiple', ['甲', '乙', '丙', '丁'], [answer])).clicked.length, 0);
+	}
+	for (const answer of ['Z', 'AB', '答案是 B']) {
+		assert.equal((await solve('single', ['甲', '乙', '丙', '丁'], [answer])).clicked.length, 0);
+	}
+	assert.deepEqual(
+		(await solve('single', ['相同', '相同', '相同'], ['C'])).clicked.map((item) => item.index),
+		[2]
+	);
+	assert.deepEqual(
+		(await solve('multiple', ['相同', '相同', '相同'], ['AC'])).clicked.map((item) => item.index),
+		[0, 2]
+	);
 	assert.deepEqual(
 		(await solve('judgement', ['正确', '错误'], ['错误'])).clicked.map((item) => item.index),
 		[1]
@@ -269,86 +258,72 @@ async function main() {
 		['甲', '乙']
 	);
 	assert.equal((await solve('completion', ['', ''], ['甲'])).clicked.length, 0);
+	assert.deepEqual(
+		(await solve('judgement', ['A. 对', 'B. 错'], ['错误'])).clicked.map((item) => item.index),
+		[1]
+	);
+	assert.deepEqual(
+		(await solve('judgement', ['A. 错', 'B. 对'], ['正确'])).clicked.map((item) => item.index),
+		[1]
+	);
+	assert.deepEqual(
+		(await solve('single', ['A. 对', 'B. 错'], ['错误'])).clicked.map((item) => item.index),
+		[1]
+	);
 
-	// A vision response containing a transcribed formula selects D by option index,
-	// independently of the title image and the [图片5] attachment number.
 	const pictureOptions = ['A', 'B', 'C', 'D'].map((letter) => 'https://example.com/' + letter + '.png');
 	const pictureEnv = {
-		option_items: pictureOptions,
-		suggestion_option_items: ['[图片2]', '[图片3]', '[图片4]', '[图片5]'],
+		suggestion_title: '[图片1]',
 		suggestion_options: '[图片2]\n[图片3]\n[图片4]\n[图片5]',
 		images: Array(5).fill('data:image/png;base64,AA==')
 	};
-	const formula = '2y²+2yz+z²-4y-3z+2=0';
-	assert.equal((await solve('single', pictureOptions, [formula], {}, pictureEnv)).clicked.length, 0);
-	const pictureSingle = await solve('single', pictureOptions, [formula], { option_indices: [3] }, pictureEnv);
-	assert.equal(pictureSingle.result.finish, true);
-	assert.deepEqual(pictureSingle.domClicks, [3]);
-	assert.equal(pictureSingle.infos[0].results[0].answer, formula);
-	assert.deepEqual((pictureSingle.infos[0].results[0].extra_data as any).option_indices, [3]);
 	assert.deepEqual(
-		(await solve('multiple', pictureOptions, ['公式甲', '公式乙'], { option_indices: [0, 3] }, pictureEnv)).domClicks,
+		(await solve('single', pictureOptions, ['D'], {}, pictureEnv)).clicked.map((item) => item.index),
+		[3]
+	);
+	assert.deepEqual(
+		(await solve('multiple', pictureOptions, ['AD'], {}, pictureEnv)).clicked.map((item) => item.index),
 		[0, 3]
 	);
-	// Reject all invalid/contradictory selections before any DOM click, including a
-	// page that reordered/replaced its options after the request was sent.
-	for (const indices of [[4], [-1], ['D'], [1.5], [null], [], [0, 3]]) {
-		assert.deepEqual(
-			(await solve('single', pictureOptions, [formula], { option_indices: indices }, pictureEnv)).domClicks,
-			[]
-		);
-	}
-	assert.deepEqual(
-		(await solve('multiple', pictureOptions, ['甲', '乙'], { option_indices: [0, 0] }, pictureEnv)).domClicks,
-		[]
+	// The selected title has all four image options embedded in it, just like online
+	// lookup. Legacy extra fields do not suppress a valid display answer.
+	const lookup = await solve(
+		'single',
+		pictureOptions,
+		['D'],
+		{ option_indices: [3] },
+		{
+			...pictureEnv,
+			type: 'unknown',
+			options: '',
+			suggestion_title: '1. (单选题) [图片1]\nA. [图片2]\nB. [图片3]\nC. [图片4]\nD. [图片5]'
+		}
 	);
-	assert.deepEqual(
-		(await solve('multiple', pictureOptions, ['甲', '乙'], { option_indices: [0, 4] }, pictureEnv)).domClicks,
-		[]
-	);
-	assert.deepEqual(
+	assert.equal(lookup.infos[0].error, undefined);
+	assert.equal(lookup.infos[0].results[0].answer, 'D');
+	assert.deepEqual((lookup.infos[0].results[0].extra_data as any).answers, ['D']);
+	assert.equal((lookup.infos[0].results[0].extra_data as any).option_indices, undefined);
+	const formula = '2y²+2yz+z²-4y-3z+2=0';
+	assert.equal(
 		(
 			await solve(
 				'single',
 				pictureOptions,
 				[formula],
 				{ option_indices: [3] },
-				pictureEnv,
-				[...pictureOptions].reverse()
+				{
+					...pictureEnv,
+					type: 'unknown',
+					options: ''
+				}
 			)
-		).domClicks,
-		[]
-	);
-	assert.deepEqual(
-		(await solve('single', pictureOptions, [formula], { option_indices: [3] }, pictureEnv, pictureOptions.slice(1)))
-			.domClicks,
-		[]
-	);
-	assert.deepEqual(
-		(await solve('single', ['甲', '乙'], ['甲'], { option_indices: [1] }, { option_items: ['甲', '乙'] })).domClicks,
-		[]
-	);
-	assert.deepEqual(
-		(await solve('single', ['甲', '甲'], ['甲'], { option_indices: [1] }, { option_items: ['甲', '甲'] })).domClicks,
-		[1]
-	);
-	const multiline = ['第一行\n第二行', '第三行\n第四行'];
-	assert.deepEqual(
-		(await solve('single', multiline, [multiline[1]], { option_indices: [1] }, { option_items: multiline })).domClicks,
-		[1]
+		).infos[0].results[0].answer,
+		formula
 	);
 
-	// Exercise the actual automatic worker with image-only DOM options and real
-	// radio/checkbox inputs. Only the API response is simulated; no course is touched.
+	// Exercise the original worker's actual radio/checkbox handlers in a test DOM.
 	for (const type of ['single', 'multiple'] as const) {
-		const selected = type === 'single' ? [3] : [0, 3];
-		const searched = await solve(
-			type,
-			pictureOptions,
-			selected.map(() => formula),
-			{ option_indices: selected },
-			pictureEnv
-		);
+		const searched = await solve(type, pictureOptions, [type === 'single' ? 'D' : 'AD'], {}, pictureEnv);
 		const root = document.createElement('section');
 		for (const src of pictureOptions) {
 			const label = document.createElement('label');

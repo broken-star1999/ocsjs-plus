@@ -836,7 +836,6 @@ function work({ answererWrappers, period, thread, answerSeparators }: CommonWork
 				if (type === 'completion') return '';
 				const optResults = (ctx.elements.options ?? []).filter(Boolean).map((o: any) => extractTextWithImages(o));
 				return {
-					items: optResults.map((r: { text: string }) => r.text),
 					text: optResults.map((r: { text: string }) => r.text).join('\n'),
 					images: optResults.flatMap((r: { images: string[] }) => r.images)
 				};
@@ -1002,7 +1001,6 @@ function aiWork({ answererWrappers, period, thread, answerSeparators }: CommonWo
 				ctx.type = getType(ctx.elements.options) || 'unknown';
 				const optResults = ctx.elements.options.map((o: any) => extractTextWithImages(o));
 				return {
-					items: optResults.map((r: { text: string }) => r.text),
 					text: optResults.map((r: { text: string }) => r.text).join('\n'),
 					images: optResults.flatMap((r: { images: string[] }) => r.images)
 				};

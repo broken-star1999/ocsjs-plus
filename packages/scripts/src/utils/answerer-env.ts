@@ -301,8 +301,6 @@ export async function buildAnswererEnv(params: {
 	title: string;
 	/** 选项文本，支持字符串或字符串数组（数组会按行拼接为字符串） */
 	options?: string | string[];
-	/** One entry per DOM option, preserving duplicates, empty entries and embedded newlines. */
-	optionItems?: string[];
 	/** DOM 调用方传入的标题图片 URL（跳过正则提取） */
 	titleImages?: string[];
 	/** DOM 调用方传入的选项图片 URL（跳过正则提取） */
@@ -325,7 +323,6 @@ export async function buildAnswererEnv(params: {
 		title: params.title,
 		options
 	};
-	if (params.optionItems?.length) env.option_items = params.optionItems.slice();
 	let imageUrls: string[] = [];
 	if (params.enableImageOptimize) {
 		const suggestion = await createImageSuggestion(params.title, options, params.titleImages, params.optionsImages);
@@ -340,16 +337,6 @@ export async function buildAnswererEnv(params: {
 				env.suggestion_options = dedupeLines(suggestion.suggestion_options);
 			}
 		}
-	}
-	if (env.option_items) {
-		const replacements = imageUrls.map((url, index) => ({ url, index })).sort((a, b) => b.url.length - a.url.length);
-		env.suggestion_option_items = env.option_items.map((item: string) => {
-			let text = item;
-			for (const { url, index } of replacements) {
-				text = text.split(url).join(` [图片${index + 1}] `);
-			}
-			return text;
-		});
 	}
 	return { env, imageUrls };
 }
