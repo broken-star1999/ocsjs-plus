@@ -161,7 +161,7 @@ export class SearchInfosElement extends HTMLElement {
 				]);
 				// AI 答案/错误常驻，头部箭头只控制调用详情和思考内容。
 				return createAccordionCard({
-					className: 'search-info-details',
+					className: 'search-info-details' + (isAI ? ' ai-search-info' : ''),
 					expanded: true,
 					header: [
 						homeLink,

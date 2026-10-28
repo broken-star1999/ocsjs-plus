@@ -35,6 +35,7 @@ async function main() {
 	const question = { title: '1 + 1 = ?', options: '1\n2\n3', type: 'single' };
 	assert.equal(buildAIRequest(config, question).model, 'test-model');
 	assert.equal(buildAIRequest(config, question).stream, false);
+	assert.match(String(buildAIRequest(config, question).messages[0].content), /思考内容.*简体中文/);
 	assert.equal(
 		buildAIRequest({ ...config, endpoint: 'https://api.deepseek.com' }, question).response_format?.type,
 		'json_object'

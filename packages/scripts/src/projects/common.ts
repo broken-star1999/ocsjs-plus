@@ -1648,9 +1648,11 @@ export const CommonProject = Project.create({
 			},
 			onrender({ panel }) {
 				const content = h('div', '', (content) => {
+					panel.classList.add('ocs-online-search-panel');
+					content.className = 'ocs-online-results';
 					content.style.marginBottom = '12px';
 				});
-				const preview = h('div', { style: { marginBottom: '12px' } });
+				const preview = h('div', { className: 'ocs-online-preview' });
 				const renderPreview = () => {
 					if (!preview.isConnected) return;
 					const images = onlineSelection.images.filter((image) => this.cfg.searchValue.includes(image.marker));
@@ -1662,39 +1664,29 @@ export const CommonProject = Project.create({
 								: '划选网页中的文字和图片后，在这里预览。暂不支持截图、背景图或 Canvas。'
 						)
 					);
+					const grid = h('div', { className: 'ocs-online-image-grid' });
+					if (images.length) preview.append(grid);
 					for (const image of images) {
 						const remove = h('button', { className: 'base-style-button-secondary' }, '移除 ' + image.marker);
 						remove.onclick = () => {
 							this.cfg.searchValue = this.cfg.searchValue.split(image.marker).join('');
 							renderPreview();
 						};
-						preview.append(
-							h(
-								'div',
-								{
+						grid.append(
+							h('div', { className: 'ocs-online-image' }, [
+								h('img', {
+									src: image.url,
+									alt: image.marker,
 									style: {
-										display: 'inline-flex',
-										flexDirection: 'column',
-										gap: '6px',
-										margin: '8px 8px 0 0',
-										verticalAlign: 'top'
+										width: '100%',
+										height: '64px',
+										objectFit: 'contain',
+										border: '1px solid #80808033',
+										borderRadius: '6px'
 									}
-								},
-								[
-									h('img', {
-										src: image.url,
-										alt: image.marker,
-										style: {
-											width: '120px',
-											height: '80px',
-											objectFit: 'contain',
-											border: '1px solid #80808033',
-											borderRadius: '6px'
-										}
-									}),
-									remove
-								]
-							)
+								}),
+								remove
+							])
 						);
 					}
 				};
@@ -1767,7 +1759,8 @@ export const CommonProject = Project.create({
 								],
 								(div) => {
 									div.classList.add('card');
-									div.style.width = '480px';
+									div.style.width = '100%';
+									div.style.boxSizing = 'border-box';
 								}
 							)
 						);

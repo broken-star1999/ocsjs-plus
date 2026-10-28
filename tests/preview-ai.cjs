@@ -10,6 +10,7 @@ const html = `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><title>OCS
 <p><button id="failure">切换为 401 错误</button></p>
 <section id="image-question"><p>图中有几个圆？请选择正确答案。</p><img width="140" height="70" src="/question.svg" alt="示例题图"><p>A. 1 个</p><p>B. 2 个</p></section>
 <p><button id="select-image">只选示例图片</button> <button id="select-question">选中整道示例题</button></p>
+<p><button id="layout-example">五图长题示例</button></p>
 <p><button id="add-frame">加载测试子页面</button> <button id="child-call">发起子页面模拟请求</button></p>
 <p><button id="auto-results">生成自动搜题示例</button></p>
 <p>请求记录：</p><ol id="requests"></ol></main>
@@ -50,6 +51,18 @@ const selectExample=imageOnly=>{
 };
 document.querySelector('#select-image').onclick=()=>selectExample(true);
 document.querySelector('#select-question').onclick=()=>selectExample(false);
+document.querySelector('#layout-example').onclick=()=>{
+ const question=document.querySelector('#image-question');
+ question.style='max-height:240px;overflow:auto';
+ question.replaceChildren();
+ const title=document.createElement('p');title.textContent='长题干示例：给定曲面与平面，判断投影方程。'.repeat(8)+'x'.repeat(240);question.append(title);
+ for(let i=1;i<=5;i++){
+  const line=document.createElement('p');line.textContent=i===1?'题图':String.fromCharCode(63+i)+'.';
+  const image=document.createElement('img');image.src='/question.svg?image='+i;image.width=140;image.height=70;
+  line.append(image);question.append(line);
+ }
+ selectExample(false);
+};
 document.querySelector('#add-frame').onclick=()=>{
  if(document.querySelector('#test-child'))return;
  const iframe=document.createElement('iframe');iframe.id='test-child';iframe.title='测试子页面';
@@ -94,7 +107,9 @@ window.GM_xmlhttpRequest=opts=>{
    if(payload.question.includes('接口失败示例')){opts.onload({status:401,responseText:'Authentication failed'});return}
    const uncertain=payload.question.includes('不确定示例');
    opts.onload({status:200,responseText:JSON.stringify({usage:{prompt_tokens:128,completion_tokens:32,total_tokens:160},choices:[{finish_reason:'stop',message:{
-    ...(!payload.question.includes('无思考字段')?{reasoning_content:'这是本地模拟的思考内容，用于验证显示效果，不代表真实模型输出。\\n题目为 1 + 1，模拟服务返回答案 2。'}:{}),
+    ...(!payload.question.includes('无思考字段')?{reasoning_content:new URLSearchParams(location.search).has('layout')
+      ?('这是本地长文本布局验证，不代表真实模型输出。'+('long_formula_without_spaces_'.repeat(12))+'\\n').repeat(30)
+      :'这是本地模拟的思考内容，用于验证显示效果，不代表真实模型输出。\\n题目为 1 + 1，模拟服务返回答案 2。'}:{}),
     content:JSON.stringify({answers:uncertain?[]:['2'],uncertain})}}]})});
   }
  },100);return{abort(){clearTimeout(timer);opts.onabort?.()}};
@@ -121,7 +136,7 @@ OCS.start({projects:[{name:'通用',scripts:{settings:OCS.CommonProject.scripts.
 </script><link rel="stylesheet" href="/dist/style.css"></html>`;
 http
 	.createServer((req, res) => {
-		if (req.url === '/question.svg') {
+		if (new URL(req.url, 'http://127.0.0.1').pathname === '/question.svg') {
 			res.setHeader('Content-Type', 'image/svg+xml');
 			res.end(
 				'<svg xmlns="http://www.w3.org/2000/svg" width="140" height="70"><rect width="140" height="70" fill="white"/><circle cx="40" cy="35" r="20" fill="#4263eb"/><circle cx="100" cy="35" r="20" fill="#14b8a6"/></svg>'

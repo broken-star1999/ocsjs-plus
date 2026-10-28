@@ -1,7 +1,7 @@
 # OCS Plus 网课助手
 
-> 当前分支为 **0.1.2-beta.1 测试版**，用于验证划词选图、AI 调用信息和思考内容展示。
-> [安装测试版](https://github.com/broken-star1999/ocsjs-plus/releases/download/v0.1.2-beta.1/ocs.user.js) · [测试版说明](https://github.com/broken-star1999/ocsjs-plus/releases/tag/v0.1.2-beta.1) · [正式版 0.1.1](https://github.com/broken-star1999/ocsjs-plus/releases/tag/v0.1.1)
+> 当前分支为 **0.1.2-beta.2 测试版**，修复多图与长题目撑宽面板，并加入中文思考内容偏好。
+> [安装测试版](https://github.com/broken-star1999/ocsjs-plus/releases/download/v0.1.2-beta.2/ocs.user.js) · [测试版说明](https://github.com/broken-star1999/ocsjs-plus/releases/tag/v0.1.2-beta.2) · [正式版 0.1.1](https://github.com/broken-star1999/ocsjs-plus/releases/tag/v0.1.1)
 >
 > 测试版需手动安装，脚本内的正式更新检查不会推荐预发布版本。测试通过后再合并到默认分支。
 
@@ -87,6 +87,10 @@ OCS Plus 保留原版的课程适配、题目提取与答案填写流程，开�
 ## 测试版新增功能
 
 在 **通用 → 在线搜题** 中划选网页文字和图片，搜索框会显示 `[图片1]` 等标记，下方可预览和移除图片。确认后点击搜索。纯图片选区也可搜索；当前不支持截图、背景图或 Canvas。图片读取失败时会停止本次搜索并提示。
+
+在线搜题面板宽度上限为 520px，并随较小视口收窄；多张图片按三列排列，长题目及公式换行显示。面板高度受视口限制，超出部分在内部滚动。
+
+新的 AI 请求会携带“独立思考内容优先使用简体中文”的提示，公式、代码与选项原文保持原样。实际语言由模型和接口决定；已有记录不会自动翻译。
 
 原有自动答题的题号结果面板会在每题 AI 答案下显示调用详情。点击卡片右侧箭头可收起详情，答案和错误提示保持可见；思考内容在详情内单独展开。当前为非流式请求，响应完成后一起显示；思考文本最多保留前 20000 个字符，截断时注明。
 

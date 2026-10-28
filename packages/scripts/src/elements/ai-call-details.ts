@@ -7,7 +7,14 @@ export function createAICallDetails(details: AICallDetails): HTMLElement {
 	const status = { pending: '请求中', success: '已返回答案', uncertain: '无法确定', error: '失败' }[call.status];
 	const root = h('section', {
 		className: 'ai-call-details',
-		style: { borderTop: '1px solid #80808026', marginTop: '10px', paddingTop: '10px', fontSize: '12px' }
+		style: {
+			borderTop: '1px solid #80808026',
+			marginTop: '10px',
+			paddingTop: '10px',
+			fontSize: '12px',
+			minWidth: '0',
+			maxWidth: '100%'
+		}
 	});
 	const line = (label: string, value: string) =>
 		h('div', {
