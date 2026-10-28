@@ -7,6 +7,10 @@ export interface AIAnswererConfig {
 	endpoint: string;
 	model: string;
 	vision: boolean;
+	sourceId?: string;
+	timeoutSeconds?: number;
+	extraBody?: Record<string, unknown>;
+	label?: string;
 }
 
 export interface AIModel {
@@ -39,13 +43,22 @@ export function normalizeAIEndpoint(input: string): string {
 }
 
 /** Each service gets a separate key, so switching endpoints cannot forward the old service's key. */
-export function getAIKeyStorage(endpoint: string): string {
-	return AI_API_KEY_STORAGE + ':' + normalizeAIEndpoint(endpoint);
+export function getAIKeyStorage(endpoint: string, sourceId?: string): string {
+	return (
+		AI_API_KEY_STORAGE + ':' + (sourceId ? encodeURIComponent(sourceId) + ':' : '') + normalizeAIEndpoint(endpoint)
+	);
 }
 
-async function requestAIJSON(url: string, endpoint: string, timeoutMs: number, body?: object): Promise<any> {
+async function requestAIJSON(
+	url: string,
+	endpoint: string,
+	timeoutMs: number,
+	body?: object,
+	sourceId?: string
+): Promise<any> {
 	if (typeof GM_xmlhttpRequest === 'undefined') throw new Error('AI 请求需要脚本猫或 Tampermonkey');
-	const key = typeof GM_getValue === 'undefined' ? '' : String(GM_getValue(getAIKeyStorage(endpoint), '')).trim();
+	const key =
+		typeof GM_getValue === 'undefined' ? '' : String(GM_getValue(getAIKeyStorage(endpoint, sourceId), '')).trim();
 	return new Promise((resolve, reject) => {
 		GM_xmlhttpRequest({
 			url,
@@ -80,9 +93,9 @@ async function requestAIJSON(url: string, endpoint: string, timeoutMs: number, b
 	});
 }
 
-export async function listAIModels(endpoint: string): Promise<AIModel[]> {
+export async function listAIModels(endpoint: string, sourceId?: string): Promise<AIModel[]> {
 	const url = normalizeAIEndpoint(endpoint).replace(/\/chat\/completions$/, '/models');
-	const response = await requestAIJSON(url, endpoint, 20_000);
+	const response = await requestAIJSON(url, endpoint, 20_000, undefined, sourceId);
 	if (!Array.isArray(response?.data)) throw new Error('模型列表格式错误：需要 data 数组');
 	const seen = new Set<string>();
 	const models: AIModel[] = [];
@@ -116,10 +129,12 @@ export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 		options: question.suggestion_options || question.options || ''
 	});
 	return {
+		...validateAIExtraBody(config.extraBody || {}),
 		model: config.model.trim(),
 		stream: false,
 		// DeepSeek documents JSON object mode; leave optional extensions out of other providers' requests.
-		...(new URL(normalizeAIEndpoint(config.endpoint)).hostname === 'api.deepseek.com'
+		...(new URL(normalizeAIEndpoint(config.endpoint)).hostname === 'api.deepseek.com' &&
+		!config.extraBody?.response_format
 			? { response_format: { type: 'json_object' } }
 			: {}),
 		messages: [
@@ -142,6 +157,28 @@ export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 			}
 		]
 	};
+}
+
+/** Extra inference parameters may not replace the question, credentials or output transport. */
+export function validateAIExtraBody(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('模型参数须为 JSON 对象');
+	const allowed = [
+		'temperature',
+		'top_p',
+		'max_tokens',
+		'max_completion_tokens',
+		'reasoning_effort',
+		'thinking',
+		'frequency_penalty',
+		'presence_penalty',
+		'stop',
+		'seed',
+		'response_format'
+	];
+	for (const key of Object.keys(value)) {
+		if (!allowed.includes(key)) throw new Error('不支持的模型参数：' + key);
+	}
+	return value as Record<string, unknown>;
 }
 
 /** Strict JSON parsing: explanations/refusals must never become an answer. */
@@ -183,10 +220,16 @@ export async function searchAIAnswer(
 	question: AIQuestion,
 	timeoutMs: number
 ): Promise<SearchInformation> {
-	const info: SearchInformation = { name: 'AI · ' + config.model, results: [] };
+	const info: SearchInformation = { name: config.label || 'AI · ' + config.model, results: [] };
 	try {
 		const url = normalizeAIEndpoint(config.endpoint);
-		const response = await requestAIJSON(url, config.endpoint, timeoutMs, buildAIRequest(config, question));
+		const response = await requestAIJSON(
+			url,
+			config.endpoint,
+			config.timeoutSeconds === undefined ? timeoutMs : config.timeoutSeconds * 1000,
+			buildAIRequest(config, question),
+			config.sourceId
+		);
 		const choice = response?.choices?.[0];
 		if (choice?.finish_reason && choice.finish_reason !== 'stop') {
 			throw new Error('AI 回答未正常完成：' + choice.finish_reason);

@@ -1,4 +1,4 @@
-/* global GM_getValue, GM_setValue, GM_deleteValue */
+/* global GM_getValue, GM_setValue */
 import debounce from 'lodash/debounce';
 import {
 	defaultAnswerWrapperHandler,
@@ -7,8 +7,10 @@ import {
 	WorkUploadType,
 	AnswerWrapperHandlerConfig,
 	getAIKeyStorage,
-	listAIModels,
-	normalizeAIEndpoint,
+	aiModelKey,
+	migrateAIProviders,
+	resolveAISelection,
+	AIProviderSource,
 	AIModel,
 	AnswererWrapper
 } from '@ocsjs/core';
@@ -27,6 +29,7 @@ import { IMAGE_URL_REGEX } from '../utils/answerer-env';
 import { getAnswererConfigProvider, openAnswererConnect, waitForAnswererConfig } from '../utils/answerer-connect';
 import { confirmRiskyAnswerWrappers } from '../utils/answer-wrapper-security';
 import { initEdgeMinimize } from '../utils/edge-minimize';
+import { openAIProviderManager } from '../utils/ai-provider-manager';
 import {
 	createAnswererWrapperSection,
 	createSteps,
@@ -222,7 +225,7 @@ export const CommonProject = Project.create({
 				notes: {
 					defaultValue: $ui.notes([
 						'✨鼠标移动到按钮或者输入框，可以看到提示！',
-						'在下方填写 AI 接口地址、模型和密钥，即可使用 AI 答题。关闭 AI 后可使用原有题库。',
+						'在“模型提供商”中保存接口并添加模型，再选择“答题模型”。关闭 AI 后可使用原有题库。',
 						'题目和选项将发送到你填写的 AI 服务；答案需自行核对。',
 						'设置后进入章节测试，作业，考试页面即可自动答题。'
 					]).outerHTML
@@ -234,154 +237,67 @@ export const CommonProject = Project.create({
 					attrs: { type: 'checkbox' },
 					defaultValue: true
 				},
-				aiEndpoint: {
-					enableForAttribute: true,
-					label: 'AI 接口地址',
-					defaultValue: 'https://api.deepseek.com',
-					attrs: {
-						placeholder: 'https://api.deepseek.com',
-						title: '默认 DeepSeek，也支持其他 OpenAI 兼容接口。每个接口分别保存密钥。'
-					}
-				},
+				// Legacy settings are kept only for one-time migration.
+				aiEndpoint: { defaultValue: 'https://api.deepseek.com' },
 				aiModels: { defaultValue: [] as AIModel[] },
-				aiModelsEndpoint: { defaultValue: '' },
-				aiModel: {
-					enableForAttribute: true,
-					label: 'AI 模型',
-					tag: 'select',
-					defaultValue: '',
-					options: [['', '请先保存密钥并获取模型列表']],
-					onload() {
-						const select = this;
-						const settings = CommonProject.scripts.settings;
-						const render = () => {
-							select.replaceChildren(
-								h('option', { value: '', text: '请选择模型' }),
-								...settings.cfg.aiModels.map((model) =>
-									h('option', {
-										value: model.id,
-										text:
-											model.name +
-											(model.name !== model.id ? ` (${model.id})` : '') +
-											(model.vision ? ' · 支持图片' : '')
-									})
-								)
-							);
-							select.value = settings.cfg.aiModel;
-						};
-						render();
-						const listeners: (number | void)[] = [];
-						const listener = () => {
-							if (!select.isConnected) listeners.forEach((id) => settings.offConfigChange(id));
-							else render();
-						};
-						listeners.push(settings.onConfigChange('aiModels', listener), settings.onConfigChange('aiModel', listener));
-					}
-				},
-				aiModelsStatus: {
-					sync: true,
-					label: '模型列表状态',
-					defaultValue: '保存密钥后自动获取模型',
-					attrs: { readOnly: true, title: '模型列表通过当前接口的 /models 获取' }
-				},
-				aiModelsButton: {
-					label: '获取模型列表',
-					defaultValue: '获取 / 刷新模型列表',
-					attrs: { type: 'button' },
-					onload() {
-						this.onclick = async () => {
-							this.disabled = true;
-							try {
-								await CommonProject.scripts.settings.methods.refreshAIModels();
-							} finally {
-								this.disabled = false;
-							}
-						};
-					}
-				},
-				aiVision: {
-					enableForAttribute: true,
-					label: 'AI 识图（需模型支持）',
-					attrs: { type: 'checkbox', title: '开启后发送题目图片；同时需要开启高级设置中的图片题优化' },
-					defaultValue: false,
-					onload() {
-						const input = this as HTMLInputElement;
-						const settings = CommonProject.scripts.settings;
-						const listener = settings.onConfigChange('aiVision', (enabled) => {
-							if (input.isConnected) input.checked = enabled;
-							else settings.offConfigChange(listener);
-						});
-					}
-				},
-				aiKeyButton: {
-					label: 'AI 密钥',
-					defaultValue: '设置 / 更换密钥',
+				aiModel: { defaultValue: '' },
+				aiVision: { defaultValue: false },
+				aiProviders: { defaultValue: [] as AIProviderSource[] },
+				aiProvidersMigrated: { defaultValue: false },
+				aiProviderManager: {
+					label: '模型提供商',
+					defaultValue: '管理提供商与模型',
 					attrs: { type: 'button' },
 					onload() {
 						this.onclick = () => {
-							let keyStorage: string;
-							try {
-								keyStorage = getAIKeyStorage(CommonProject.scripts.settings.cfg.aiEndpoint);
-							} catch {
-								$message.warn('请先填写有效的 AI 接口地址');
-								return;
-							}
-							const input = h('input', {
-								type: 'password',
-								autocomplete: 'new-password',
-								placeholder: GM_getValue(keyStorage, '')
-									? '当前接口已有密钥，留空保留'
-									: '输入 API Key（本地服务可留空）',
-								style: { width: '100%' }
-							});
-							$modal.confirm({
-								title: '设置 AI 密钥',
-								content: h('div', [
-									h('p', '密钥单独保存于脚本管理器存储中，不写入源码和题库配置。请使用自己的可信接口。'),
-									input,
-									h('button', '清除已存密钥', (button) => {
-										button.onclick = () => {
-											GM_deleteValue(keyStorage);
-											input.value = '';
-											input.placeholder = '密钥已清除';
-										};
-									})
-								]),
-								async onConfirm() {
-									if (input.value.trim()) GM_setValue(keyStorage, input.value.trim());
-									input.value = '';
-									$message.success('密钥已保存，正在获取模型列表');
-									await CommonProject.scripts.settings.methods.refreshAIModels();
+							const settings = CommonProject.scripts.settings;
+							settings.methods.ensureAIProviders();
+							openAIProviderManager({
+								read: () => ({ sources: settings.cfg.aiProviders, selection: settings.cfg.aiSelectedModel }),
+								write: (state) => {
+									settings.cfg.aiProviders = state.sources;
+									settings.cfg.aiSelectedModel = state.selection;
 								}
 							});
 						};
 					}
 				},
-				aiTestButton: {
-					label: 'AI 连通测试',
-					defaultValue: '发送测试题（会调用一次接口）',
-					attrs: { type: 'button' },
+				aiSelectedModel: {
+					label: '答题模型',
+					tag: 'select',
+					defaultValue: '',
+					enableForAttribute: true,
+					options: [['', '请在模型提供商中添加并启用模型']],
 					onload() {
-						this.onclick = async () => {
-							this.disabled = true;
-							try {
-								const settings = CommonProject.scripts.settings.methods.getWorkOptions();
-								if (!settings.aiEnabled) throw new Error('请先开启 AI 答题');
-								const infos = await defaultAnswerWrapperHandler(settings.answererWrappers, {
-									title: '1 + 1 等于多少？',
-									options: '1\n2\n3\n4',
-									type: 'single'
-								});
-								$modal.alert({
-									title: 'AI 测试结果',
-									content: h('div', infos[0]?.error || '接口返回：' + (infos[0]?.results[0]?.answer || '无答案'))
-								});
-							} catch (error) {
-								$modal.alert({ content: h('div', error instanceof Error ? error.message : '测试失败') });
-							} finally {
-								this.disabled = false;
-							}
+						const select = this;
+						const settings = CommonProject.scripts.settings;
+						settings.methods.ensureAIProviders();
+						const render = () => {
+							select.replaceChildren(
+								h('option', { value: '', text: '请选择答题模型' }),
+								...settings.cfg.aiProviders.flatMap((source) =>
+									source.models
+										.filter((model) => model.enabled)
+										.map((model) =>
+											h('option', {
+												value: aiModelKey(source.id, model.id),
+												text: source.name + ' / ' + model.name + (model.vision ? ' · 图片' : '')
+											})
+										)
+								)
+							);
+							select.value = settings.cfg.aiSelectedModel;
 						};
+						render();
+						const listeners: (number | void)[] = [];
+						const update = () => {
+							if (!select.isConnected) listeners.forEach((id) => settings.offConfigChange(id));
+							else render();
+						};
+						listeners.push(
+							settings.onConfigChange('aiProviders', update),
+							settings.onConfigChange('aiSelectedModel', update)
+						);
 					}
 				},
 				answererWrappers: {
@@ -1197,53 +1113,51 @@ export const CommonProject = Project.create({
 				}
 			},
 			methods() {
-				let modelRequestId = 0;
 				return {
-					invalidateAIModels: () => {
-						modelRequestId++;
-					},
-					refreshAIModels: async (): Promise<void> => {
-						const requestId = ++modelRequestId;
-						const endpoint = this.cfg.aiEndpoint;
-						this.cfg.aiModelsStatus = '正在获取模型列表…';
-						try {
-							const models = await listAIModels(endpoint);
-							if (requestId !== modelRequestId || endpoint !== this.cfg.aiEndpoint) return;
-							this.cfg.aiModelsEndpoint = normalizeAIEndpoint(endpoint);
-							this.cfg.aiModels = models;
-							if (!models.some((model) => model.id === this.cfg.aiModel)) this.cfg.aiModel = models[0].id;
-							this.cfg.aiModelsStatus = `已获取 ${models.length} 个模型，可在上方下拉选择`;
-						} catch (error) {
-							if (requestId !== modelRequestId || endpoint !== this.cfg.aiEndpoint) return;
-							this.cfg.aiModels = [];
-							this.cfg.aiModel = '';
-							this.cfg.aiModelsStatus = error instanceof Error ? error.message : '获取模型列表失败';
+					ensureAIProviders: (): void => {
+						if (this.cfg.aiProvidersMigrated) return;
+						if (this.cfg.aiProviders.length === 0) {
+							const state = migrateAIProviders({
+								endpoint: this.cfg.aiEndpoint,
+								model: this.cfg.aiModel,
+								vision: this.cfg.aiVision,
+								models: this.cfg.aiModels
+							});
+							const source = state.sources[0];
+							const previous = GM_getValue(getAIKeyStorage(source.endpoint), '');
+							if (previous) GM_setValue(getAIKeyStorage(source.endpoint, source.id), previous);
+							this.cfg.aiProviders = state.sources;
+							this.cfg.aiSelectedModel = state.selection;
 						}
+						this.cfg.aiProvidersMigrated = true;
 					},
 					/**
 					 * 获取自动答题配置，包括题库配置
 					 */
 					getWorkOptions: () => {
+						this.methods.ensureAIProviders();
 						// 使用 json 深拷贝，防止修改原始配置
 						const workOptions: typeof this.cfg = JSON.parse(JSON.stringify(this.cfg));
 						if (workOptions.aiEnabled) {
-							const selected = workOptions.aiModels.find((model) => model.id === workOptions.aiModel);
-							if (selected?.vision === false) workOptions.aiVision = false;
-							// Virtual native adapter: keeps all platform workers on their existing answerer path.
-							workOptions.answererWrappers = [
-								{
-									name: 'AI · ' + workOptions.aiModel,
-									url: workOptions.aiEndpoint,
-									method: 'post',
-									type: 'GM_xmlhttpRequest',
-									headers: {},
-									handler: '',
-									ai: { endpoint: workOptions.aiEndpoint, model: workOptions.aiModel, vision: workOptions.aiVision }
-								}
-							];
+							const ai = resolveAISelection({
+								sources: workOptions.aiProviders,
+								selection: workOptions.aiSelectedModel
+							});
+							workOptions.answererWrappers = ai
+								? [
+										{
+											name: 'AI · ' + ai.model,
+											url: ai.endpoint,
+											method: 'post',
+											type: 'GM_xmlhttpRequest',
+											headers: {},
+											handler: '',
+											ai
+										}
+								  ]
+								: [];
 							return workOptions;
 						}
-
 						/**
 						 * 过滤掉被禁用的题库
 						 */
@@ -1283,26 +1197,7 @@ export const CommonProject = Project.create({
 			},
 			// 实时更新内部设置
 			oncomplete() {
-				const updateVision = () => {
-					const selected = this.cfg.aiModels.find((model) => model.id === this.cfg.aiModel);
-					if (selected?.vision !== undefined) this.cfg.aiVision = selected.vision;
-				};
-				this.onConfigChange('aiModel', updateVision);
-				this.onConfigChange('aiEndpoint', () => {
-					this.methods.invalidateAIModels();
-					this.cfg.aiModels = [];
-					this.cfg.aiModel = '';
-					this.cfg.aiModelsEndpoint = '';
-					this.cfg.aiVision = false;
-					this.cfg.aiModelsStatus = '接口已更改，请保存该接口的密钥或获取模型列表';
-				});
-				if (self === top && this.cfg.aiEnabled && this.cfg.aiModels.length === 0) {
-					try {
-						if (GM_getValue(getAIKeyStorage(this.cfg.aiEndpoint), '')) this.methods.refreshAIModels();
-					} catch {
-						/* Invalid addresses are reported when fetching/testing. */
-					}
-				}
+				this.methods.ensureAIProviders();
 				AnswerWrapperHandlerConfig.timeout_seconds = this.cfg.answerWrapperHandlerTimeout;
 				this.onConfigChange('answerWrapperHandlerTimeout', (sec) => {
 					AnswerWrapperHandlerConfig.timeout_seconds = sec;

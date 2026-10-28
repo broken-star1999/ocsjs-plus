@@ -9,6 +9,13 @@ const html = `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><title>OCS
 <p><button id="failure">切换为 401 错误</button></p><p>请求记录：</p><ol id="requests"></ol></main>
 <script>
 const values=new Map(), listeners=new Map(); let listenerId=0, tabData={}, fail=false;
+if(location.search.includes('legacy=1')){
+ values.set('common.settings.aiEndpoint','https://api.deepseek.com/v1');
+ values.set('common.settings.aiModel','legacy-model');
+ values.set('common.settings.aiModels',[{id:'legacy-model',name:'旧版模型',vision:true}]);
+ values.set('common.settings.aiVision',true);
+ values.set('ocs.ai.apiKey:https://api.deepseek.com/v1/chat/completions','demo-legacy-key');
+}
 // Fixture only: expose the shadow DOM to browser automation; the installed script keeps its original closed root.
 const nativeAttachShadow=Element.prototype.attachShadow;Element.prototype.attachShadow=function(options){return nativeAttachShadow.call(this,{...options,mode:'open'})};
 window.unsafeWindow=window;
@@ -39,7 +46,7 @@ OCS.start({projects:[{name:'通用',scripts:{settings:OCS.CommonProject.scripts.
 </script><link rel="stylesheet" href="/dist/style.css"></html>`;
 http
 	.createServer((req, res) => {
-		if (req.url === '/') {
+		if (new URL(req.url, 'http://127.0.0.1').pathname === '/') {
 			res.setHeader('Content-Type', 'text/html; charset=utf-8');
 			res.end(html);
 			return;
