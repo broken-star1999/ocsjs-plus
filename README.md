@@ -1,9 +1,9 @@
 # OCS Plus 网课助手
 
-> 当前分支为 **0.1.2-beta.4 测试版**：撤回自定义选项编号协议，改为 AI 返回选择题字母，复用原版解析函数并优先按字母定位 AI 答案。
-> [安装测试版](https://github.com/broken-star1999/ocsjs-plus/releases/download/v0.1.2-beta.4/ocs.user.js) · [测试版说明](https://github.com/broken-star1999/ocsjs-plus/releases/tag/v0.1.2-beta.4) · [正式版 0.1.1](https://github.com/broken-star1999/ocsjs-plus/releases/tag/v0.1.1)
+> 当前正式版本为 **0.1.2**，包含划词选图、每题 AI 调用详情与思考内容，以及选择题字母答案匹配。
+> [安装正式版](https://github.com/broken-star1999/ocsjs-plus/releases/download/v0.1.2/ocs.user.js) · [版本说明](https://github.com/broken-star1999/ocsjs-plus/releases/tag/v0.1.2) · [全部版本](https://github.com/broken-star1999/ocsjs-plus/releases)
 >
-> 测试版需手动安装，脚本内的正式更新检查不会推荐预发布版本。测试通过后再合并到默认分支。
+> 默认分支为 `feat/ai-answerer`；脚本从本仓库的 Latest 正式发布获取更新，预发布版本需手动安装。原版 OCS 基线为 5.2.3，实际验证范围见下文。
 
 基于 [OCS](https://github.com/ocsjs/ocsjs) 扩展的网课助手，持续跟进原版功能与修复，加入 AI 答题和多提供商管理。
 
@@ -84,7 +84,7 @@ OCS Plus 保留原版的课程适配、题目提取与答案填写流程，开�
 
 勾选 **允许图片输入** 只是告诉脚本可以发送图片，不能给纯文本模型增加识图能力。图片未成功解析或模型未启用图片能力时，脚本会提示原因。
 
-## 测试版新增功能
+## 0.1.2 新增功能
 
 在 **通用 → 在线搜题** 中划选网页文字和图片，搜索框会显示 `[图片1]` 等标记，下方可预览和移除图片。确认后点击搜索。纯图片选区也可搜索；当前不支持截图、背景图或 Canvas。图片读取失败时会停止本次搜索并提示。
 
@@ -130,7 +130,7 @@ OCS Plus 保留原版的课程适配、题目提取与答案填写流程，开�
 
 OCS Plus Fork 自 [ocsjs/ocsjs](https://github.com/ocsjs/ocsjs)，当前版本以原版 **5.2.3** 为基线。后续持续跟进原版功能、课程适配和修复；发布前核对上游更新，合并并验证兼容性后，再构建 Plus 版本。
 
-Plus 使用独立的 **0.x** 版本号，原版基线单独记录。已安装旧编号 `5.2.x` 测试版的用户，请手动覆盖安装 `0.1.1` 一次；管理器通常不会自动降级，之后按 `0.x` 版本正常升级。
+Plus 使用独立的 **0.x** 版本号，原版基线单独记录。已安装旧编号 `5.2.x` 测试版的用户，请手动覆盖安装当前正式版一次；管理器通常不会自动降级，之后按 `0.x` 版本正常升级。
 
 目前没有配置自动同步上游。原版更新不会直接覆盖 Plus 功能，原版发布也不会让已安装的 Plus 自动变成原版。
 
