@@ -1,37 +1,66 @@
 import { QuestionResolver, WorkContext } from './interface';
 import { resolveSingle, resolveMultiple, resolveJudgement, resolveCompletion, isJudgementOptions } from './resolvers';
 import type { SearchInformation } from '../answer-wrapper';
+import type { NativeAIAnswerData } from '../answer-wrapper/ai';
 
 /** Native AI answers keep their array boundaries; punctuation in code/formulas is never a separator. */
-function nativeAIAnswers(infos: SearchInformation[]): string[] | undefined {
+function nativeAIAnswers(infos: SearchInformation[]): NativeAIAnswerData | undefined {
 	for (const info of infos) {
 		for (const result of info.results) {
-			const data = result.extra_data as { ai_native?: boolean; answers?: unknown } | undefined;
+			const data = result.extra_data as NativeAIAnswerData | undefined;
 			if (data?.ai_native) {
 				return Array.isArray(data.answers) && data.answers.every((answer) => typeof answer === 'string')
-					? data.answers
-					: [];
+					? data
+					: { ai: true, ai_native: true, answers: [] };
 			}
 		}
 	}
 }
 
+const normalizeAIOption = (text: string) =>
+	text
+		.trim()
+		.replace(/^[A-Z][.．、)）]\s*/, '')
+		.replace(/\s+/g, '');
+
 /** Only match an exact option (apart from whitespace and a displayed option letter). */
 function matchAIOptions(answers: string[], options: string[]): number[] | undefined {
-	const normalize = (text: string) =>
-		text
-			.trim()
-			.replace(/^[A-Z][.．、)）]\s*/, '')
-			.replace(/\s+/g, '');
 	const indices: number[] = [];
 	for (const answer of answers) {
 		const matches = options
 			.map((option, index) => ({ option, index }))
-			.filter(({ option }) => normalize(option) === normalize(answer));
+			.filter(({ option }) => normalizeAIOption(option) === normalizeAIOption(answer));
 		if (matches.length !== 1 || indices.includes(matches[0].index)) return;
 		indices.push(matches[0].index);
 	}
 	return indices.length ? indices : undefined;
+}
+
+/** Positions are bound to the original option list, not line numbers or image placeholders. */
+function resolveAIOptions(data: NativeAIAnswerData, options: string[]): number[] | undefined {
+	if (data.option_indices === undefined) return matchAIOptions(data.answers, options);
+	const indices = data.option_indices;
+	const snapshot = data.option_texts;
+	if (
+		!Array.isArray(indices) ||
+		!indices.length ||
+		indices.length !== data.answers.length ||
+		new Set(indices).size !== indices.length ||
+		!indices.every((i) => Number.isInteger(i) && i >= 0 && i < options.length) ||
+		!Array.isArray(snapshot) ||
+		snapshot.length !== options.length ||
+		!snapshot.every((text, i) => typeof text === 'string' && normalizeAIOption(text) === normalizeAIOption(options[i]))
+	)
+		return;
+	// A formula transcribed from an image need not match its URL. If text does identify
+	// another option, however, reject the contradiction before invoking any click handler.
+	for (let i = 0; i < data.answers.length; i++) {
+		const matches = options
+			.map((text, index) => ({ text, index }))
+			.filter(({ text }) => normalizeAIOption(text) === normalizeAIOption(data.answers[i]));
+		if (matches.length && !matches.some(({ index }) => index === indices[i])) return;
+	}
+	return indices;
 }
 
 /** 默认答案题目处理器 */
@@ -54,11 +83,14 @@ export function createDefaultQuestionResolver<E>(
 		async single(infos, options, handler) {
 			const optionTexts = options.map((o, i) => toText(o, i));
 			const ai = nativeAIAnswers(infos);
-			if (ai !== undefined && !isJudgementOptions(optionTexts.map((o) => o.trim()))) {
-				const indices = ai.length === 1 ? matchAIOptions(ai, optionTexts) : undefined;
+			if (
+				ai !== undefined &&
+				(ai.option_indices !== undefined || !isJudgementOptions(optionTexts.map((o) => o.trim())))
+			) {
+				const indices = ai.answers.length === 1 ? resolveAIOptions(ai, optionTexts) : undefined;
 				if (!indices) return { finish: false };
 				const index = indices[0];
-				await handler('single', ai[0], options[index], ctx);
+				await handler('single', ai.answers[0], options[index], ctx);
 				return { finish: true, option: optionTexts[index] };
 			}
 
@@ -95,7 +127,7 @@ export function createDefaultQuestionResolver<E>(
 			const ai = nativeAIAnswers(infos);
 			if (ai !== undefined) {
 				const optionTexts = options.map((o, i) => toText(o, i));
-				const indices = matchAIOptions(ai, optionTexts);
+				const indices = resolveAIOptions(ai, optionTexts);
 				if (!indices) return { finish: false };
 				for (const index of indices) await handler('multiple', optionTexts[index], options[index], ctx);
 				return { finish: true, options: indices.map((index) => optionTexts[index]) };
@@ -145,9 +177,10 @@ export function createDefaultQuestionResolver<E>(
 		async completion(infos, options, handler) {
 			const ai = nativeAIAnswers(infos);
 			if (ai !== undefined) {
-				if (ai.length !== options.length || ai.some((answer) => !answer.trim())) return { finish: false };
-				for (let i = 0; i < ai.length; i++) await handler('completion', ai[i], options[i], ctx);
-				return { finish: true, answers: ai };
+				if (ai.answers.length !== options.length || ai.answers.some((answer) => !answer.trim()))
+					return { finish: false };
+				for (let i = 0; i < ai.answers.length; i++) await handler('completion', ai.answers[i], options[i], ctx);
+				return { finish: true, answers: ai.answers };
 			}
 			const answerGroups = infos.map((info) => info.results.map((res) => res.answer));
 
