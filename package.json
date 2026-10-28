@@ -1,6 +1,6 @@
 {
 	"name": "ocsjs-plus",
-	"version": "5.2.4",
+	"version": "0.2.0",
 	"description": "OCS Plus - 基于 OCS 的可扩展网课助手",
 	"types": "./lib/src/core/index.d.ts",
 	"main": "./lib/src/core/index.js",
