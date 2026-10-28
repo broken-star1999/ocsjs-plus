@@ -160,7 +160,7 @@ export async function createUserScript(opts: CreateOptions) {
 	}
 	const content = [
 		// 创建脚本头部信息
-		createUserScriptMetadata(opts.metaDataFormatter, Object.assign(DEFAULT_METADATA, opts.metadata)),
+		createUserScriptMetadata(opts.metaDataFormatter, Object.assign({}, DEFAULT_METADATA, opts.metadata)),
 		requires,
 		resources,
 		// 合并入口文件

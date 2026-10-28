@@ -4,6 +4,8 @@ const { series } = require('gulp');
 const del = require('del');
 const util = require('util');
 const { version } = require('../package.json');
+const { repository } = require('../packages/scripts/src/config/plus-repository.json');
+const repositoryUrl = 'https://github.com/' + repository;
 /** @type {(...args: any[])=> Promise<void>} */
 const execOut = util.promisify(require('./utils').execOut);
 const { createUserScript, createMetaFile } = require('../packages/utils');
@@ -80,15 +82,17 @@ async function createUserJs() {
 				version: version,
 				description: [
 					'OCS Plus 网课助手，基于 OCS 扩展，支持 OpenAI 兼容接口 AI 答题及自动获取模型列表。',
-					'项目 https://github.com/broken-star1999/ocsjs-plus ，支持 ',
+					'项目 ' + repositoryUrl + ' ，支持 ',
 					projectList,
 					'等网课的学习，作业。具体的功能请查看脚本悬浮窗中的教程页面。'
 				].join(' '),
 				author: 'enncy',
 				license: 'MIT',
-				namespace: 'https://github.com/broken-star1999/ocsjs-plus',
-				homepage: 'https://github.com/broken-star1999/ocsjs-plus',
-				source: 'https://github.com/broken-star1999/ocsjs-plus',
+				namespace: repositoryUrl,
+				homepage: repositoryUrl,
+				source: repositoryUrl,
+				updateURL: repositoryUrl + '/releases/latest/download/ocs.meta.js',
+				downloadURL: repositoryUrl + '/releases/latest/download/ocs.user.js',
 				icon: 'https://cdn.ocsjs.com/logo.png',
 				connect: [
 					'*',
@@ -138,6 +142,8 @@ async function createUserJs() {
 	devOpts.parseRequire = false;
 	devOpts.parseResource = false;
 	devOpts.metadata.name = devOpts.metadata.name + '(dev)';
+	delete devOpts.metadata.updateURL;
+	delete devOpts.metadata.downloadURL;
 	devOpts.metadata.require = ['file:///' + path.join(distResolvedPath, 'index.js')];
 	devOpts.metadata.resource = [`STYLE file:///${CSS_PATH}`];
 	devOpts.entry = path.join(__dirname, '../packages/scripts/entry.dev.js');
@@ -146,18 +152,6 @@ async function createUserJs() {
 	fs.copyFileSync(CSS_PATH, path.join(distResolvedPath, 'style.css'));
 	console.log('createUserScript: ', devOpts.metadata.name, devOpts.dist);
 	await createUserScript(devOpts);
-
-	/** 创建全Connect域名通用脚本 */
-	const commonOpts = createOptions();
-	commonOpts.metadata.name = commonOpts.metadata.name + ' - 全域名通用版';
-	const connect = Array.isArray(commonOpts.metadata.connect) ? commonOpts.metadata.connect : [];
-	connect.push('*');
-	commonOpts.metadata.connect = connect;
-	commonOpts.entry = path.join(__dirname, '../packages/scripts/entry.common.js');
-	commonOpts.dist = path.join(distResolvedPath, 'ocs.common.user.js');
-
-	console.log('createUserScript: ', commonOpts.metadata.name, commonOpts.dist);
-	await createUserScript(commonOpts);
 }
 
 exports.default = series(cleanOutput, testResolver, buildPackages, createUserJs);

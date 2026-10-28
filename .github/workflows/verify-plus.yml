@@ -28,5 +28,5 @@ jobs:
           name: ocsjs-plus-userscript
           path: |
             dist/ocs.user.js
-            dist/ocs.common.user.js
+            dist/ocs.meta.js
           if-no-files-found: error

@@ -1,5 +1,6 @@
 /* global GM_getValue, GM_setValue, GM_deleteValue, GM_listValues */
 import { h, $modal } from 'easy-us';
+import { AI_PROVIDER_ICONS } from './ai-provider-icons';
 import {
 	AIProviderState,
 	AIProviderSource,
@@ -28,7 +29,6 @@ const providerCards = [
 	{
 		id: 'deepseek',
 		name: 'DeepSeek',
-		icon: 'DS',
 		endpoint: 'https://api.deepseek.com',
 		description: 'DeepSeek 官方接口',
 		keywords: 'ds 深度求索'
@@ -36,7 +36,6 @@ const providerCards = [
 	{
 		id: 'mimo',
 		name: 'MiMo',
-		icon: 'mi',
 		endpoint: 'https://api.xiaomimimo.com/v1',
 		description: '小米 MiMo 官方接口',
 		keywords: '小米 xiaomi'
@@ -44,7 +43,6 @@ const providerCards = [
 	{
 		id: 'openai',
 		name: 'OpenAI',
-		icon: 'AI',
 		endpoint: 'https://api.openai.com/v1',
 		description: 'OpenAI 官方接口',
 		keywords: 'gpt chatgpt'
@@ -52,7 +50,6 @@ const providerCards = [
 	{
 		id: 'custom',
 		name: '自定义',
-		icon: '+',
 		endpoint: '',
 		description: 'OpenAI 兼容服务或自建网关',
 		keywords: 'custom compatible 中转 本地'
@@ -62,13 +59,28 @@ const providerCards = [
 const style = `
 .ocs-ai-manager{font:14px system-ui;color:inherit;min-height:420px}
 .ocs-ai-manager *{box-sizing:border-box}.ocs-ai-manager button{cursor:pointer}
-.ocs-ai-manager .workbench{display:grid;grid-template-columns:205px minmax(0,1fr);gap:20px;height:66vh;max-height:650px;overflow:hidden}
+.ocs-ai-manager .workbench{display:grid;grid-template-columns:285px minmax(0,1fr);gap:24px;height:66vh;max-height:650px;overflow:hidden}
 .ocs-ai-manager .workbench>section{overflow:auto;min-width:0;padding-right:4px}
-.ocs-ai-manager aside{border-right:1px solid #dce3ed;padding-right:14px;overflow:auto}
-.ocs-ai-manager .source{width:100%;text-align:left;padding:12px;margin:5px 0;border:1px solid #dce3ed;border-radius:9px;background:transparent;color:inherit}
-.ocs-ai-manager .source.selected{border-color:#4263eb;background:#4263eb12}.ocs-ai-manager small{display:block;color:#718096;word-break:break-all;margin-top:5px}
+.ocs-ai-manager .source-detail-heading{position:sticky;top:0;z-index:2;background:#fff;border-bottom:1px solid #8080801a;padding-bottom:8px}
+.ocs-ai-manager aside{border-right:1px solid #80808026;padding-right:16px;overflow:auto;min-width:0}
+.ocs-ai-manager small{display:block;color:#718096;word-break:break-all;margin-top:5px}
+.ocs-ai-manager .source-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 12px 18px}
+.ocs-ai-manager .source-heading strong{font-size:17px}.ocs-ai-manager .source-add{display:flex;align-items:center;gap:7px;border:0;background:transparent;color:#4296d4;padding:7px 2px;font:inherit}
+.ocs-ai-manager .source-add span{font-size:22px;line-height:1}.ocs-ai-manager .source-row{position:relative;border-radius:14px;margin:4px 0;transition:background .15s}
+.ocs-ai-manager .source-row:hover{background:#8080800d}.ocs-ai-manager .source-row.selected{background:#80808018}
+.ocs-ai-manager .source{display:flex;align-items:center;gap:13px;width:100%;min-height:84px;text-align:left;padding:16px 44px 16px 12px;border:0;border-radius:14px;background:transparent;color:inherit;font:inherit}
+.ocs-ai-manager .source:focus-visible,.ocs-ai-manager .source-remove:focus-visible,.ocs-ai-manager .source-add:focus-visible{outline:2px solid #4263eb;outline-offset:-2px}
+.ocs-ai-manager .source-icon{display:grid;place-items:center;flex:0 0 32px;width:32px;height:32px}.ocs-ai-manager .source-icon svg{display:block;width:100%;height:100%}
+.ocs-ai-manager .source-icon.mimo{font-size:23px;font-weight:700;color:#ff6900}.ocs-ai-manager .source-icon.custom{font-size:28px;color:#718096}
+.ocs-ai-manager .source-copy{display:block;flex:1;min-width:0}.ocs-ai-manager .source-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:15px;font-weight:700;line-height:1.5}
+.ocs-ai-manager .source-url{display:block;margin-top:4px;color:#80838c;font-size:12px;line-height:1.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;word-break:normal}
+.ocs-ai-manager .source-draft{display:block;font-size:11px;color:#4296d4;margin-top:3px}
+.ocs-ai-manager .source-remove{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:30px;height:34px;border:0;border-radius:7px;background:transparent;color:inherit;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .15s}
+.ocs-ai-manager .source-remove svg{width:17px;height:17px}.ocs-ai-manager .source-row.selected .source-remove,.ocs-ai-manager .source-row:hover .source-remove,.ocs-ai-manager .source-row:focus-within .source-remove{opacity:1;visibility:visible;pointer-events:auto}
+.ocs-ai-manager .source-remove:hover{color:#e25b58;background:#e25b5812}
 .ocs-ai-manager .toolbar,.ocs-ai-manager .model-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .ocs-ai-manager .toolbar{justify-content:space-between;margin-bottom:14px}.ocs-ai-manager h3{margin:12px 0;font-size:16px}
+.ocs-ai-manager .model-controls{display:flex;gap:8px;flex-wrap:wrap}
 .ocs-ai-manager .field{display:grid;grid-template-columns:110px minmax(0,1fr);gap:12px;align-items:center;margin:12px 0}
 .ocs-ai-manager .field input,.ocs-ai-manager .field select,.ocs-ai-manager textarea,.ocs-ai-manager .search{width:100%;min-width:0;padding:8px;border:1px solid #cdd5e0;border-radius:7px;color:inherit;background:transparent}
 .ocs-ai-manager .actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.ocs-ai-manager .model-row{border-top:1px solid #e2e8f0;padding:10px 0;flex-wrap:nowrap}
@@ -81,11 +93,12 @@ const style = `
 .ocs-ai-picker .provider-card{display:flex;align-items:center;gap:14px;text-align:left;min-height:100px;padding:18px;border:1px solid #dce3ed;border-radius:12px;color:inherit;background:transparent;transition:border-color .15s,background .15s}
 .ocs-ai-picker .provider-card:hover,.ocs-ai-picker .provider-card:focus-visible{border-color:#4263eb;background:#4263eb0d;outline:2px solid #4263eb33;outline-offset:1px}
 .ocs-ai-picker .provider-card strong{font-size:16px}.ocs-ai-picker .provider-card small{margin-top:6px;word-break:normal;line-height:1.5}
-.ocs-ai-picker .provider-icon{display:grid;place-items:center;flex-shrink:0;width:42px;height:42px;border-radius:12px;font-size:18px;font-weight:700;background:#4263eb12;color:#4263eb}
+.ocs-ai-picker .provider-icon{display:grid;place-items:center;flex:0 0 42px;width:42px;height:42px;border-radius:12px;font-size:18px;font-weight:700;background:#4263eb12;color:#4263eb}
 .ocs-ai-picker .provider-icon.mimo{background:#ff690014;color:#e65e00;font-size:24px}.ocs-ai-picker .provider-icon.openai{background:#10977f14;color:#10977f}.ocs-ai-picker .provider-icon.custom{background:#71809614;color:#718096;font-size:28px;font-weight:400}
 .ocs-ai-picker .picker-note{margin:16px 0 0;line-height:1.6}.ocs-ai-picker .picker-empty{grid-column:1/-1;padding:28px 8px;text-align:center}
 @media(max-width:700px){.ocs-ai-manager .workbench{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.ocs-ai-manager aside{border:0;max-height:130px}.ocs-ai-manager .field{grid-template-columns:1fr;gap:4px}.ocs-ai-manager .model-row{flex-wrap:wrap}}
 @media(max-width:480px){.ocs-ai-picker .provider-grid{grid-template-columns:1fr}.ocs-ai-picker .provider-card{min-height:80px;padding:12px}}
+@media(hover:none){.ocs-ai-manager .source-remove{opacity:1;visibility:visible;pointer-events:auto}}
 `;
 /* eslint-enable max-len */
 
@@ -109,7 +122,6 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 	let endpointInput: HTMLInputElement;
 	let timeoutInput: HTMLInputElement;
 	let keyInput: HTMLInputElement;
-	let presetInput: HTMLSelectElement;
 
 	const notify = (text: string, error = false) => {
 		status.textContent = text;
@@ -137,15 +149,24 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 		input.setAttribute('aria-label', label);
 		return h('label', { className: 'field' }, [h('span', label), input]);
 	};
+	const providerIcon = (preset: string) => {
+		const icon = h('span', { className: 'source-icon ' + preset, ariaHidden: 'true' });
+		if (preset === 'mimo' || preset === 'custom') icon.textContent = preset === 'mimo' ? 'mi' : '+';
+		else icon.innerHTML = AI_PROVIDER_ICONS[preset === 'deepseek' ? 'deepseek' : 'openai'];
+		return icon;
+	};
 	const confirm = (message: string, action: () => void) =>
 		$modal.confirm({ title: '确认操作', content: h('p', message), onConfirm: action });
 	const select = (source?: AIProviderSource) => {
+		if (source && source.id === selectedId) return;
 		const apply = () => {
 			selectedId = source?.id || '';
 			draft = source ? clone(source) : undefined;
-			dirty = false;
+			dirty = !!source && !options.read().sources.some((item) => item.id === source.id);
 			clearKey = false;
 			render();
+			detail.scrollTop = 0;
+			notify(source ? '正在配置：' + source.name + (dirty ? '（未保存）' : '') : '请选择或新增提供商源。');
 		};
 		if (dirty) confirm('当前提供商有未保存的修改，放弃这些修改并切换？', apply);
 		else apply();
@@ -165,9 +186,13 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 				...cards.map((card) => {
 					const node = button(card.name, () => {
 						dialog?.remove();
+						const baseName = card.id === 'custom' ? '自定义提供商' : card.name;
+						const names = new Set(options.read().sources.map((source) => source.name.toLowerCase()));
+						let name: string = baseName;
+						for (let suffix = 1; names.has(name.toLowerCase()); suffix++) name = baseName + '_' + suffix;
 						select({
 							id: 'source-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-							name: card.id === 'custom' ? '自定义提供商' : card.name,
+							name,
 							preset: card.id === 'custom' ? 'openai' : card.id,
 							endpoint: card.endpoint,
 							timeoutSeconds: 120,
@@ -177,10 +202,9 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 					});
 					node.className = 'provider-card';
 					node.setAttribute('aria-label', card.name);
-					node.replaceChildren(
-						h('span', { className: 'provider-icon ' + card.id, ariaHidden: 'true' }, card.icon),
-						h('span', {}, [h('strong', card.name), h('small', card.description)])
-					);
+					const icon = providerIcon(card.id);
+					icon.classList.add('provider-icon');
+					node.replaceChildren(icon, h('span', {}, [h('strong', card.name), h('small', card.description)]));
 					return node;
 				})
 			);
@@ -209,7 +233,6 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			...draft,
 			name: nameInput.value,
 			endpoint: endpointInput.value,
-			preset: presetInput.value as AIProviderSource['preset'],
 			timeoutSeconds: Number(timeoutInput.value),
 			models: old?.models || draft.models,
 			catalog: old?.catalog || draft.catalog
@@ -247,7 +270,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			if (selectedId === source.id && !dirty) {
 				draft = clone(options.read().sources.find((item) => item.id === source.id)!);
 				render();
-				notify(`已获取 ${catalog.length} 个候选模型。点击“添加”后才会成为可选的答题模型。`);
+				notify(`已获取 ${source.name} 的 ${catalog.length} 个候选模型。点击“添加”后才会成为可选的答题模型。`);
 			}
 		} catch (error) {
 			if (selectedId === source.id && requests.get(source.id) === requestId) {
@@ -397,7 +420,13 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 		};
 		search.oninput = renderRows;
 		list.append(
-			h('div', { className: 'toolbar' }, [h('h3', '模型'), button('手动添加模型', () => editModel())]),
+			h('div', { className: 'toolbar' }, [
+				h('h3', '模型'),
+				h('div', { className: 'model-controls' }, [
+					button('保存并获取模型', fetchModels, true),
+					button('手动添加模型', () => editModel())
+				])
+			]),
 			search,
 			h('h3', '已配置模型'),
 			configured,
@@ -407,17 +436,59 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 		renderRows();
 		return list;
 	};
-	function render() {
+	const removeSource = (source: AIProviderSource) => {
+		const saved = options.read().sources.some((item) => item.id === source.id);
+		confirm(saved ? '删除提供商 ' + source.name + ' 及其模型？' : '放弃新提供商 ' + source.name + ' 的配置？', () => {
+			if (saved) {
+				options.write(deleteAISource(options.read(), source.id));
+				requests.delete(source.id);
+				const prefix = AI_API_KEY_STORAGE + ':' + encodeURIComponent(source.id) + ':';
+				for (const key of GM_listValues()) if (key.startsWith(prefix)) GM_deleteValue(key);
+			}
+			if (source.id === selectedId) {
+				dirty = false;
+				select(options.read().sources[0]);
+			} else renderSidebar();
+			notify(saved ? '提供商已删除' : '已放弃新增提供商');
+		});
+	};
+	function renderSidebar() {
 		const state = options.read();
+		const sources = [...state.sources];
+		if (draft && !sources.some((source) => source.id === draft!.id)) sources.push(draft);
+		const add = button('新增', chooseProvider);
+		add.className = 'source-add';
+		add.prepend(h('span', { ariaHidden: 'true' }, '+'));
 		sidebar.replaceChildren(
-			h('div', { className: 'toolbar' }, [h('strong', '提供商源'), button('＋ 新增', chooseProvider)]),
-			...state.sources.map((source) => {
+			h('div', { className: 'source-heading' }, [h('strong', '提供商源'), add]),
+			...sources.map((source) => {
 				const node = button(source.name, () => select(source));
-				node.className = 'source' + (source.id === selectedId ? ' selected' : '');
-				node.append(h('small', source.endpoint), h('small', `${source.models.length} 个已配置模型`));
-				return node;
+				node.className = 'source';
+				node.setAttribute('aria-label', '选择提供商 ' + source.name);
+				node.setAttribute('aria-pressed', String(source.id === selectedId));
+				const saved = state.sources.some((item) => item.id === source.id);
+				node.replaceChildren(
+					providerIcon(source.preset),
+					h('span', { className: 'source-copy' }, [
+						h('strong', { className: 'source-name', title: source.name }, source.name),
+						h('span', { className: 'source-url', title: source.endpoint }, source.endpoint || '待填写接口地址'),
+						...(!saved ? [h('span', { className: 'source-draft' }, '未保存')] : [])
+					])
+				);
+				const remove = button('', () => removeSource(source));
+				remove.className = 'source-remove';
+				const label = (saved ? '删除提供商 ' : '放弃新增 ') + source.name;
+				remove.setAttribute('aria-label', label);
+				remove.title = label;
+				remove.innerHTML =
+					'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7m4-7v7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+				return h('div', { className: 'source-row' + (source.id === selectedId ? ' selected' : '') }, [node, remove]);
 			})
 		);
+	}
+	function render() {
+		const state = options.read();
+		renderSidebar();
 		if (!draft) {
 			detail.replaceChildren(h('p', { className: 'empty' }, '选择一个提供商源，或点击“＋ 新增”开始配置。'));
 			return;
@@ -436,17 +507,6 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 		} catch {
 			/* New source */
 		}
-		presetInput = h('select', {}, [
-			h('option', { value: 'openai', text: 'OpenAI 兼容 / 自定义网关' }),
-			h('option', { value: 'deepseek', text: 'DeepSeek' }),
-			h('option', { value: 'mimo', text: 'MiMo' })
-		]);
-		presetInput.value = draft.preset;
-		presetInput.onchange = () => {
-			dirty = true;
-			if (presetInput.value === 'deepseek') endpointInput.value = 'https://api.deepseek.com';
-			if (presetInput.value === 'mimo') endpointInput.value = 'https://api.xiaomimimo.com/v1';
-		};
 		for (const input of [nameInput, endpointInput, timeoutInput, keyInput])
 			input.oninput = () => {
 				dirty = true;
@@ -456,15 +516,18 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			hasKey ? '当前接口已保存密钥，留空即可保留。' : '当前接口尚未设置密钥。本地无鉴权服务可留空。'
 		);
 		const saved = state.sources.find((source) => source.id === draft!.id);
+		const heading = h('h3', draft.name + (saved ? '' : '（未保存）'));
+		nameInput.oninput = () => {
+			dirty = true;
+			if (draft && !saved) {
+				draft.name = nameInput.value;
+				heading.textContent = draft.name + '（未保存）';
+				renderSidebar();
+			}
+		};
 		detail.replaceChildren(
-			h('h3', draft.name + (saved ? '' : '（未保存）')),
-			field('提供商名称', nameInput),
-			field('服务类型', presetInput),
-			field('API Base URL', endpointInput),
-			field('API Key', keyInput),
-			keyStatus,
-			field('超时（秒）', timeoutInput),
-			h('div', { className: 'actions' }, [
+			h('div', { className: 'toolbar source-detail-heading' }, [
+				heading,
 				button(
 					'保存配置',
 					() => {
@@ -472,28 +535,22 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 						notify('提供商配置已保存');
 					},
 					true
-				),
-				button('保存并获取模型', fetchModels, true),
+				)
+			]),
+			field('提供商名称', nameInput),
+			field('API Key', keyInput),
+			keyStatus,
+			field('API Base URL', endpointInput),
+			field('超时（秒）', timeoutInput),
+			h('div', { className: 'actions' }, [
 				button('清除密钥', () => {
 					clearKey = true;
 					dirty = true;
 					keyInput.value = '';
 					keyStatus.textContent = '密钥将在保存配置后清除。';
-				}),
-				button('删除提供商', () => {
-					if (!draft) return;
-					const source = draft;
-					confirm('删除提供商 ' + source.name + ' 及其模型？', () => {
-						options.write(deleteAISource(options.read(), source.id));
-						const prefix = AI_API_KEY_STORAGE + ':' + encodeURIComponent(source.id) + ':';
-						for (const key of GM_listValues()) if (key.startsWith(prefix)) GM_deleteValue(key);
-						dirty = false;
-						select(options.read().sources[0]);
-						notify('提供商已删除');
-					});
 				})
 			]),
-			saved ? renderModels(saved) : h('p', { className: 'muted' }, '保存提供商后，即可获取或手动添加模型。')
+			renderModels(saved || draft)
 		);
 	}
 	const initial = options.read().sources.find((source) => source.id === selectedId);

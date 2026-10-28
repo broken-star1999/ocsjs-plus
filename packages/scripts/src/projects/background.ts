@@ -15,8 +15,12 @@ import {
 	MessageElement,
 	$menu
 } from 'easy-us';
-import semver_gt from 'semver/functions/gt';
-import semver_valid from 'semver/functions/valid';
+import {
+	getLatestPlusRelease,
+	shouldNotifyPlusRelease,
+	PLUS_REPOSITORY,
+	PLUS_RELEASES_URL
+} from '../utils/plus-update';
 import { CommonProject } from './common';
 import { CXProject, definedProjects, ICourseProject, IcveMoocProject, YKTProject, ZHSProject, ZJYProject } from '..';
 import { RenderScript } from '../render';
@@ -601,140 +605,157 @@ export const BackgroundProject = Project.create({
 			matches: [['所有页面', /.*/]],
 			namespace: 'background.update',
 			configs: {
-				notes: {
-					defaultValue: '脚本自动更新模块，如果有新的版本会自动通知。'
-				},
+				notes: { defaultValue: '仅检查 OCS Plus 仓库的正式发布版本；确认后前往安装，不会自动替换脚本。' },
 				autoNotify: {
 					defaultValue: false,
 					label: '开启更新通知',
-					attrs: { type: 'checkbox', title: '上游版本更新提醒。Plus 版本默认关闭，可在本仓库查看更新。' }
+					attrs: { type: 'checkbox', title: '检查 OCS Plus 正式发布版本，发现新版本时通知。' }
 				},
-				notToday: {
-					defaultValue: -1
-				},
-				ignoreVersions: {
-					defaultValue: [] as string[]
-				}
+				notToday: { defaultValue: '' },
+				ignoreVersions: { defaultValue: [] as string[] }
 			},
 			methods() {
 				return {
-					getLastVersion: async () => {
-						return (await request('https://cdn.ocsjs.com/ocs-version.json?t=' + Date.now(), {
-							method: 'get',
-							type: 'GM_xmlhttpRequest'
-						})) as { 'last-version': string; resource: Record<string, string>; notes: string[] };
-					},
-					/**
-					 * 查看更新日志
-					 */
+					getLastVersion: getLatestPlusRelease,
 					showChangelog: async () => {
-						const changelog = h('div', {
+						const content = h('div', {
 							className: 'markdown card',
-							innerHTML: '加载中...',
-							style: { maxWidth: '600px' }
+							textContent: '正在读取 OCS Plus 发布日志…',
+							style: { maxHeight: '55vh', overflow: 'auto' }
 						});
-						$modal.simple({
-							width: 600,
-							content: h('div', [
-								h('div', { className: 'notes card' }, [
-									$ui.notes(['此页面实时更新，遇到问题可以查看最新版本是否修复。'])
-								]),
-								changelog
+						$modal.simple({ title: 'OCS Plus 更新日志', width: 680, content });
+						try {
+							const release = await this.methods.getLastVersion();
+							if (release) {
+								content.innerHTML = markdown(release.notes || '该版本未填写更新日志。');
+								content.prepend(h('p', 'OCS Plus ' + release.version));
+							} else content.textContent = 'OCS Plus 仓库尚未发布正式版本。';
+						} catch (error) {
+							content.textContent = error instanceof Error ? error.message : '读取更新日志失败，请稍后重试。';
+						}
+						content.append(
+							h('p', {}, [
+								h(
+									'a',
+									{
+										href: PLUS_RELEASES_URL,
+										target: '_blank',
+										rel: 'noopener noreferrer'
+									},
+									'在 GitHub 查看 OCS Plus 发布页'
+								)
 							])
-						});
-						const md = await request('https://cdn.ocsjs.com/articles/ocs/changelog.md?t=' + Date.now(), {
-							type: 'GM_xmlhttpRequest',
-							responseType: 'text',
-							method: 'get'
-						});
-						changelog.innerHTML = markdown(md);
+						);
 					}
 				};
 			},
 			async onrender({ panel }) {
-				const version = await this.methods.getLastVersion();
 				const infos = $gm.getInfos();
-
-				if (!infos) {
-					return;
-				}
-
-				const changeLog = h('button', { className: 'base-style-button-secondary' }, '📄查看更新日志');
-				changeLog.onclick = () => this.methods.showChangelog();
-				const updatePage = this.startConfig?.updatePage || '';
+				const report = h('div', { role: 'status', textContent: '正在检查 OCS Plus 更新…' });
+				const check = h('button', { className: 'base-style-button' }, '检查更新');
+				const changelog = h('button', { className: 'base-style-button-secondary' }, '查看更新日志');
+				changelog.onclick = () => this.methods.showChangelog();
 				panel.body.replaceChildren(
 					h('div', { className: 'card' }, [
-						h('hr'),
-						h('div', ['最新版本：' + version['last-version'] + ' - ', changeLog]),
-						h('hr'),
-						h('div', '当前版本：' + infos.script.version),
-						h('div', '脚本管理器：' + infos.scriptHandler),
-						h('div', ['脚本更新链接：', h('a', { target: '_blank', href: updatePage }, [updatePage || '无'])])
+						h('p', '当前版本：' + (infos?.script.version || '未知')),
+						h('p', '更新来源：' + PLUS_REPOSITORY),
+						h('p', '脚本管理器：' + (infos?.scriptHandler || '未知')),
+						h('p', {}, [
+							h('a', { href: PLUS_RELEASES_URL, target: '_blank', rel: 'noopener noreferrer' }, '打开 OCS Plus 发布页')
+						]),
+						report,
+						h('div', {}, [check, changelog])
 					])
 				);
-				console.log('versions', {
-					notToday: this.cfg.notToday,
-					ignoreVersions: this.cfg.ignoreVersions,
-					version: version
-				});
+				const load = async () => {
+					check.disabled = true;
+					report.textContent = '正在检查 OCS Plus 更新…';
+					try {
+						const release = await this.methods.getLastVersion();
+						if (!release) {
+							report.textContent = '仓库尚未发布正式版本，当前可使用本地构建包。';
+							return;
+						}
+						const newer = shouldNotifyPlusRelease(release, infos?.script.version || '', []);
+						report.replaceChildren(
+							h('p', '最新正式版本：' + release.version),
+							h(
+								'p',
+								!release.ready
+									? '发布文件尚未上传完成，请稍后重试。'
+									: newer
+									? '发现新的 OCS Plus 版本，可前往安装。'
+									: '当前版本无需更新。'
+							)
+						);
+						if (release.ready && newer)
+							report.append(
+								h(
+									'a',
+									{
+										href: release.downloadUrl,
+										target: '_blank',
+										rel: 'noopener noreferrer',
+										className: 'base-style-button'
+									},
+									'安装 OCS Plus ' + release.version
+								)
+							);
+					} catch (error) {
+						report.textContent = error instanceof Error ? error.message : '检查更新失败，请稍后重试。';
+					} finally {
+						check.disabled = false;
+					}
+				};
+				check.onclick = () => load();
+				await load();
 			},
 			oncomplete() {
-				if (this.cfg.autoNotify && $.isInTopWindow()) {
-					if (this.cfg.notToday === -1 || this.cfg.notToday !== new Date().getDate()) {
-						const infos = $gm.getInfos();
-						if (infos) {
-							// 版本表达式验证
-							if (!!semver_valid(infos.script.version) === false) {
-								$message.error(`当前版本号 (${infos.script.version}) 不符合semver版本书写规范，请重新修改版本。`);
-								return;
-							}
-
-							// 避免阻挡用户操作，这里等页面运行一段时间后再进行更新提示
-							setTimeout(async () => {
-								const version = await this.methods.getLastVersion();
-								const last = version['last-version'];
-
-								if (
-									// 跳过主动忽略的版本
-									this.cfg.ignoreVersions.includes(last) === false &&
-									// 版本比较
-									semver_gt(last, infos.script.version)
-								) {
-									const updatePage = this.startConfig?.updatePage || '';
-									const modal = $modal.confirm({
-										maskCloseable: false,
-										width: 600,
-										content: $ui.notes([`检测到新版本发布 ${last} ：`, [...(version.notes || [])]]),
-										footer: h('div', [
-											h('button', { className: 'base-style-button-secondary', innerText: '跳过此版本' }, (btn) => {
-												btn.onclick = () => {
-													this.cfg.ignoreVersions = [...this.cfg.ignoreVersions, last];
-													modal?.remove();
-												};
-											}),
-											h('button', { className: 'base-style-button-secondary', innerText: '今日不再提示' }, (btn) => {
-												btn.onclick = () => {
-													this.cfg.notToday = new Date().getDate();
-													modal?.remove();
-												};
-											}),
-											h('button', { className: 'base-style-button', innerText: '前往更新' }, (btn) => {
-												btn.onclick = () => {
-													if (updatePage) {
-														window.open(updatePage, '_blank');
-														modal?.remove();
-													} else {
-														$message.error({ content: '无法前往更新页面，更新链接为空' });
-													}
-												};
-											})
-										])
-									});
-								}
-							}, 5 * 1000);
-						}
+				const date = new Date();
+				const today = date.getFullYear() + '-' + (date.getMonth() + 1) + '-' + date.getDate();
+				const infos = $gm.getInfos();
+				if (!this.cfg.autoNotify || !$.isInTopWindow() || this.cfg.notToday === today || !infos) return;
+				setTimeout(async () => {
+					try {
+						const release = await this.methods.getLastVersion();
+						if (!shouldNotifyPlusRelease(release, infos.script.version, this.cfg.ignoreVersions) || !release) return;
+						const modal = $modal.confirm({
+							title: 'OCS Plus 更新',
+							maskCloseable: false,
+							width: 680,
+							content: h('div', {}, [
+								h('p', '发现新版本：' + release.version + '（当前 ' + infos.script.version + '）'),
+								h('div', {
+									className: 'markdown',
+									innerHTML: markdown(release.notes || '该版本未填写更新日志。'),
+									style: { maxHeight: '45vh', overflow: 'auto' }
+								})
+							]),
+							footer: h('div', [
+								h('button', { className: 'base-style-button-secondary', innerText: '跳过此版本' }, (btn) => {
+									btn.onclick = () => {
+										this.cfg.ignoreVersions = [...this.cfg.ignoreVersions, release.version];
+										modal?.remove();
+									};
+								}),
+								h('button', { className: 'base-style-button-secondary', innerText: '今日不再提示' }, (btn) => {
+									btn.onclick = () => {
+										this.cfg.notToday = today;
+										modal?.remove();
+									};
+								}),
+								h('button', { className: 'base-style-button', innerText: '前往更新' }, (btn) => {
+									btn.onclick = () => {
+										window.open(release.downloadUrl, '_blank', 'noopener,noreferrer');
+										modal?.remove();
+									};
+								})
+							])
+						});
+					} catch (error) {
+						console.warn('OCS Plus 更新检查失败', error);
 					}
-				}
+				}, 5000);
 			}
 		}),
 		dev: new Script({

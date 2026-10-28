@@ -1,7 +1,16 @@
-name: Build and Publish
+name: Build and Publish OCS Plus
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '已审核的正式版本标签，如 5.2.4 或 v5.2.4；须与 package.json 一致'
+        required: true
+        type: string
+      notes:
+        description: '新建 Release 的更新说明；已有 Release 的正文会保留'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -9,83 +18,53 @@ permissions:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    env:
+      BUILD_PATH: ../release
+      VITE_BUILD_PATH: ../../release
+      RELEASE_TAG: ${{ inputs.tag }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
-
-      - name: Use Node.js 18.x
-        uses: actions/setup-node@v4
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 18.x
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Setup env
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify release identity
         run: |
-          echo 'BUILD_PATH="../release"' > ./scripts/.env
-          echo 'VITE_BUILD_PATH="../../release"' > ./packages/core/.env
-          echo 'VITE_BUILD_PATH="../../release"' > ./packages/scripts/.env
-          echo "BUILDTIME=$(TZ=Asia/Shanghai date)" >> $GITHUB_ENV
-          echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
-          echo "DOWNLOAD_URL=https://github.com/ocsjs/ocsjs/releases/download/${GITHUB_REF_NAME}/" >> $GITHUB_ENV
-
-      - name: Install Dependencies
-        run: |
-          # 锁定 pnpm 版本与本地开发一致，避免新版供应链策略（minimumReleaseAge/构建脚本审批）导致 CI 安装失败
-          npm install pnpm@10.30.3 -g
-          pnpm install -w
-          cd packages/scripts && pnpm install && cd ../../
-          npm run tsc
-
-      - name: Build ocs scripts
-        run: npm run build
-
-      - name: Generate simplified changelog
-        run: npm run changelog:simplify
-
-      - name: Update release with artifacts
+          git show-ref --verify "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          node <<'NODE'
+          const semver = require('semver');
+          const version = semver.valid(process.env.RELEASE_TAG);
+          const pkg = require('./package.json');
+          const config = require('./packages/scripts/src/config/plus-repository.json');
+          if (!version || semver.prerelease(version) || version !== pkg.version) {
+            throw new Error('正式发布标签须与 package.json 的版本一致');
+          }
+          if (config.repository !== process.env.GITHUB_REPOSITORY) {
+            throw new Error('发布仓库与脚本更新源不一致');
+          }
+          NODE
+      - run: npm test
+      - run: npm run build
+      - name: Publish reviewed userscript
         uses: ncipollo/release-action@v1
         with:
-          tag: ${{ env.VERSION }}
-          artifactContentType: "text/html"
-          artifacts: |
-            ./release/ocs.user.js
-            ./release/ocs.meta.js
-            ./release/ocs.common.user.js
-            ./release/core.js
-            ./release/index.js
-            ./CHANGELOG_SIMPLIFIED.md
+          tag: ${{ inputs.tag }}
+          name: OCS Plus ${{ inputs.tag }}
+          artifacts: release/ocs.user.js,release/ocs.meta.js
+          artifactErrorsFailBuild: true
           allowUpdates: true
-          # 上传产物时保留 release-please 已写入的 changelog body，
-          # 否则 ncipollo 会用空 body 覆盖，导致后续追加点拨时 changelog 丢失
           omitBodyDuringUpdate: true
           omitNameDuringUpdate: true
+          body: |
+            ${{ inputs.notes }}
 
-      - name: Append custom release notes
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG_NAME=${GITHUB_REF#refs/tags/}
-          EXISTING_BODY=$(gh release view "$TAG_NAME" --json body -q .body 2>/dev/null || echo "")
-          DL="${{ env.DOWNLOAD_URL }}"
-          VER="${{ env.VERSION }}"
-          BT="${{ env.BUILDTIME }}"
-          CUSTOM_NOTES="
-          ---
+            ---
+            安装：[OCS Plus（支持任意 AI 接口域名）](https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/ocs.user.js)
 
-          ## 资源下载列表
-
-          - [用户脚本](${DL}ocs.user.js)
-          - [用户脚本(全域名通用版)](${DL}ocs.common.user.js)
-          - [核心库](${DL}core.js)
-          - [简洁更新日志](${DL}CHANGELOG_SIMPLIFIED.md)
-          - [META](${DL}ocs.meta.js)
-
-          ### 快捷访问
-          - [官网](https://docs.ocsjs.com/)
-
-          Created at ${BT}.
-          "
-
-          gh release edit "$TAG_NAME" --notes "${EXISTING_BODY}${CUSTOM_NOTES}"
+            [更新元信息](https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/ocs.meta.js)

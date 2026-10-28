@@ -31,4 +31,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN  }}
         run: |
-          gh workflow run build-and-publish.yml --ref ${{ steps.release.outputs.tag_name }} --repo ${{ github.repository }}
+          gh workflow run build-and-publish.yml --ref ${{ steps.release.outputs.tag_name }} --repo ${{ github.repository }} -f tag=${{ steps.release.outputs.tag_name }}
