@@ -831,6 +831,11 @@ modal-element .modal-cancel-button:hover {
 	}
 }
 
+.accordion-card-always-visible {
+	border-top: 1px solid #eef2f7;
+	padding: 8px 12px;
+}
+
 .accordion-card-body {
 	display: none;
 	border-top: 1px solid #eef2f7;
@@ -1186,4 +1191,98 @@ modal-element .modal-cancel-button:hover {
 .text-secondary {
 	color: #606266;
 	font-size: 12px;
+}
+
+// 外层窗口按 max-content 取宽；在线搜题须独立限宽，避免多图和长文字撑大窗口。
+.ocs-online-search-panel {
+	width: min(520px, calc(100vw - 64px));
+	max-height: min(700px, 72vh);
+	min-width: 0;
+	box-sizing: border-box;
+	overflow-x: hidden;
+
+	.configs {
+		width: 100%;
+		table-layout: fixed;
+		config-element label {
+			width: 80px;
+			box-sizing: border-box;
+			white-space: normal;
+		}
+	}
+
+	.configs textarea {
+		min-width: 0 !important;
+		width: 100%;
+		max-width: 100%;
+		box-sizing: border-box;
+		resize: vertical;
+	}
+
+	.script-panel-body,
+	.ocs-online-results {
+		min-width: 0;
+		max-width: 100%;
+	}
+	.ocs-online-results {
+		overflow-wrap: anywhere;
+	}
+	search-infos-element img {
+		max-width: 100%;
+		height: auto;
+	}
+	search-infos-element {
+		max-height: none !important;
+		overflow: visible;
+	}
+	.ai-search-info .accordion-card-body {
+		max-height: none;
+		overflow: visible;
+	}
+}
+
+.ocs-online-preview {
+	margin-bottom: 12px;
+	min-width: 0;
+	overflow-wrap: anywhere;
+	> small {
+		display: block;
+	}
+}
+
+.ocs-online-image-grid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 8px;
+	max-height: 190px;
+	overflow-y: auto;
+	margin-top: 8px;
+}
+
+.ocs-online-image {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+	img {
+		box-sizing: border-box;
+	}
+	button {
+		width: 100%;
+		white-space: normal;
+		font-size: 11px;
+	}
+}
+
+.ai-search-info {
+	min-width: 0;
+	max-width: 100%;
+	overflow-wrap: anywhere;
+	.accordion-card-header a {
+		min-width: 0;
+	}
+	.answer code {
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
 }

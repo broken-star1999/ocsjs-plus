@@ -434,6 +434,7 @@ export function simplifyWorkResult(
 		finish: wr.result?.finish,
 		searchInfos:
 			wr.ctx?.searchInfos.map((sr) => ({
+				ai: sr.ai,
 				error: sr.error,
 				name: sr.name,
 				homepage: sr.homepage,

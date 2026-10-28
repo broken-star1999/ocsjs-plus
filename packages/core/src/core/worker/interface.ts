@@ -80,6 +80,7 @@ export interface SimplifyWorkResult {
 	resolved: boolean;
 	/** 查题信息 */
 	searchInfos: {
+		ai?: SearchInformation['ai'];
 		/** 题目名 */
 		name: SearchInformation['name'];
 		/** 题库链接 */

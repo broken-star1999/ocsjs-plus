@@ -7,7 +7,13 @@ const html = `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><title>OCS
 <style>body{font:16px system-ui;background:#f1f5f9;padding:32px;color:#16324f}#fixture{max-width:420px;line-height:1.8}li{font-size:13px}#preview-mode{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:6px 16px;border-radius:8px;background:#fff1cb;color:#795107;border:1px solid #e0ba60;font:13px system-ui;pointer-events:none;white-space:nowrap}</style>
 <div id="preview-mode" role="note">本地模拟预览 · AI 与更新响应均为模拟 · 请勿填写真实密钥</div>
 <main id="fixture"><h1>OCS Plus · 本地模拟预览</h1><p>右侧是实际脚本设置界面。模型列表按供应商地址分别模拟，示例模型不代表真实可用模型；所有请求均留在本地，仅用于验证交互流程。</p>
-<p><button id="failure">切换为 401 错误</button></p><p>请求记录：</p><ol id="requests"></ol></main>
+<p><button id="failure">切换为 401 错误</button></p>
+<section id="image-question"><p>图中有几个圆？请选择正确答案。</p><img width="140" height="70" src="/question.svg" alt="示例题图"><p>A. 1 个</p><p>B. 2 个</p></section>
+<p><button id="select-image">只选示例图片</button> <button id="select-question">选中整道示例题</button></p>
+<p><button id="layout-example">五图长题示例</button></p>
+<p><button id="add-frame">加载测试子页面</button> <button id="child-call">发起子页面模拟请求</button></p>
+<p><button id="auto-results">生成自动搜题示例</button></p>
+<p>请求记录：</p><ol id="requests"></ol></main>
 <script>
 const values=new Map(), listeners=new Map(); let listenerId=0, tabData={}, fail=false;
 if(location.search.includes('legacy=1')){
@@ -20,13 +26,48 @@ if(location.search.includes('legacy=1')){
 // Fixture only: expose the shadow DOM to browser automation; the installed script keeps its original closed root.
 const nativeAttachShadow=Element.prototype.attachShadow;Element.prototype.attachShadow=function(options){return nativeAttachShadow.call(this,{...options,mode:'open'})};
 window.unsafeWindow=window;
-window.GM_info={script:{name:'OCS Plus 网课助手',version:'5.2.3',namespace:'ocsjs-plus'},scriptHandler:'UI fixture'};
-window.GM_getValue=(k,d)=>values.has(k)?values.get(k):d;
-window.GM_setValue=(k,v)=>{const old=values.get(k);values.set(k,v);if(JSON.stringify(old)!==JSON.stringify(v))for(const [id,l]of listeners)if(l.k===k)l.f(k,old,v,false)};
+window.GM_info={script:{name:'OCS Plus 网课助手',version:'${
+	require('../package.json').version
+}',namespace:'ocsjs-plus'},scriptHandler:'UI fixture'};
+if(location.search.includes('search=1')||location.search.includes('results=1')){
+ values.set('common.settings.aiProvidersMigrated',true);
+ values.set('common.settings.imageOptimize',true);
+ values.set('common.settings.aiProviders',[{id:'fixture',name:'DeepSeek（本地模拟）',preset:'deepseek',endpoint:'https://api.deepseek.com',timeoutSeconds:120,catalog:[],models:[{id:'fixture-vision',name:'模拟识图模型',enabled:true,vision:true,extraBody:{}}]}]);
+ values.set('common.settings.aiSelectedModel',JSON.stringify(['fixture','fixture-vision']));
+}
+const copy=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
+window.GM_getValue=(k,d)=>copy(values.has(k)?values.get(k):d);
+window.GM_setValue=(k,v,remote=false)=>{const old=values.get(k);values.set(k,copy(v));if(JSON.stringify(old)!==JSON.stringify(v))for(const [id,l]of listeners)if(l.k===k)l.f(k,copy(old),copy(v),remote)};
 window.GM_deleteValue=k=>values.delete(k);window.GM_listValues=()=>[...values.keys()];
 window.GM_addValueChangeListener=(k,f)=>{listeners.set(++listenerId,{k,f});return listenerId};window.GM_removeValueChangeListener=id=>listeners.delete(id);
-window.GM_getTab=f=>f(tabData);window.GM_saveTab=v=>{tabData=v};window.GM_notification=()=>{};window.GM_getResourceText=()=>'';
+window.GM_getTab=f=>f(copy(tabData));window.GM_saveTab=v=>{tabData=copy(v)};window.GM_notification=()=>{};window.GM_getResourceText=()=>'';
+if(self!==top)for(const name of ['GM_getValue','GM_setValue','GM_deleteValue','GM_listValues','GM_addValueChangeListener','GM_removeValueChangeListener','GM_getTab','GM_saveTab'])window[name]=top[name];
+if(self!==top)window.GM_setValue=(k,v)=>top.GM_setValue(k,v,true);
 document.querySelector('#failure').onclick=()=>{fail=!fail;document.querySelector('#failure').textContent=fail?'恢复正常响应':'切换为 401 错误'};
+const selectExample=imageOnly=>{
+ const range=document.createRange();const target=document.querySelector(imageOnly?'#image-question img':'#image-question');
+ if(imageOnly)range.selectNode(target);else range.selectNodeContents(target);
+ const selection=getSelection();selection.removeAllRanges();selection.addRange(range);
+};
+document.querySelector('#select-image').onclick=()=>selectExample(true);
+document.querySelector('#select-question').onclick=()=>selectExample(false);
+document.querySelector('#layout-example').onclick=()=>{
+ const question=document.querySelector('#image-question');
+ question.style='max-height:240px;overflow:auto';
+ question.replaceChildren();
+ const title=document.createElement('p');title.textContent='长题干示例：给定曲面与平面，判断投影方程。'.repeat(8)+'x'.repeat(240);question.append(title);
+ for(let i=1;i<=5;i++){
+  const line=document.createElement('p');line.textContent=i===1?'题图':String.fromCharCode(63+i)+'.';
+  const image=document.createElement('img');image.src='/question.svg?image='+i;image.width=140;image.height=70;
+  line.append(image);question.append(line);
+ }
+ selectExample(false);
+};
+document.querySelector('#add-frame').onclick=()=>{
+ if(document.querySelector('#test-child'))return;
+ const iframe=document.createElement('iframe');iframe.id='test-child';iframe.title='测试子页面';
+ iframe.src='/?search=1&child=1';iframe.style='width:460px;height:340px';document.querySelector('#fixture').append(iframe);
+};
 window.GM_xmlhttpRequest=opts=>{
  const endpoint=new URL(opts.url);
  const record=document.createElement('li');record.textContent=opts.method+' '+endpoint.host+endpoint.pathname;document.querySelector('#requests').append(record);
@@ -59,18 +100,49 @@ window.GM_xmlhttpRequest=opts=>{
   }
   if(fail){opts.onload({status:401,responseText:'Authentication failed'});return}
   if(opts.method==='GET')opts.onload({status:200,responseText:JSON.stringify({data:catalog})});
-  else opts.onload({status:200,responseText:JSON.stringify({choices:[{finish_reason:'stop',message:{reasoning_content:'模拟思考过程',content:JSON.stringify({answers:['2'],uncertain:false})}}]})});
+  else {
+   const request=JSON.parse(opts.data);const parts=request.messages[1].content;
+   const payload=JSON.parse(Array.isArray(parts)?parts[0].text:parts);
+   record.textContent+=' · 图片 '+(Array.isArray(parts)?parts.filter(p=>p.type==='image_url').length:0)+' 张';
+   if(payload.question.includes('接口失败示例')){opts.onload({status:401,responseText:'Authentication failed'});return}
+   const uncertain=payload.question.includes('不确定示例');
+   opts.onload({status:200,responseText:JSON.stringify({usage:{prompt_tokens:128,completion_tokens:32,total_tokens:160},choices:[{finish_reason:'stop',message:{
+    ...(!payload.question.includes('无思考字段')?{reasoning_content:new URLSearchParams(location.search).has('layout')
+      ?('这是本地长文本布局验证，不代表真实模型输出。'+('long_formula_without_spaces_'.repeat(12))+'\\n').repeat(30)
+      :'这是本地模拟的思考内容，用于验证显示效果，不代表真实模型输出。\\n题目为 1 + 1，模拟服务返回答案 2。'}:{}),
+    content:JSON.stringify({answers:uncertain?[]:['2'],uncertain})}}]})});
+  }
  },100);return{abort(){clearTimeout(timer);opts.onabort?.()}};
 };
 </script><script src="/dist/index.js"></script><script>
-OCS.start({projects:[{name:'通用',scripts:{settings:OCS.CommonProject.scripts.settings,update:OCS.BackgroundProject.scripts.update,render:OCS.RenderScript}}],renderConfig:{
+document.querySelector('#child-call').onclick=()=>OCS.searchAIAnswer({endpoint:'https://api.deepseek.com',model:'fixture-vision',vision:true,providerName:'子页面模拟'}, {title:'子页面测试题'},1000);
+document.querySelector('#auto-results').onclick=async()=>{
+ const button=document.querySelector('#auto-results');button.disabled=true;
+ const results=OCS.CommonProject.scripts.workResults;await results.methods.clearResults();results.cfg.currentResultIndex=0;
+ const pending=[];
+ const worker=new OCS.CustomOCSWorker({
+  questions:()=>['1 + 1 等于多少？','无思考字段示例：1 + 1 等于多少？','接口失败示例：1 + 1 等于多少？','不确定示例：1 + 1 等于多少？'].map(text=>({text,type:'single'})),
+  answerer:title=>OCS.defaultAnswerWrapperHandler(OCS.CommonProject.scripts.settings.methods.getWorkOptions().answererWrappers,{title,type:'single',options:'1\\n2\\n3\\n4'}),
+  resolver:infos=>({finish:infos.some(info=>info.results.length>0)}),period:0,
+  onResultsUpdate:(result,index)=>pending.push(results.methods.update(index,result))
+ });
+ try{await worker.doWork();await Promise.all(pending)}finally{button.disabled=false}
+};
+OCS.start({projects:[{name:'通用',scripts:{settings:OCS.CommonProject.scripts.settings,onlineSearch:OCS.CommonProject.scripts.onlineSearch,workResults:OCS.CommonProject.scripts.workResults,elementRegister:OCS.BackgroundProject.scripts.elementRegister,update:OCS.BackgroundProject.scripts.update,render:OCS.RenderScript}}],renderConfig:{
  renderScript:OCS.RenderScript,styles:[${JSON.stringify(
 		fs.readFileSync(path.join(root, 'dist/style.css'), 'utf8')
- )}],defaultPanelName:location.search.includes('updates=')?'background.update':'common.settings',title:'OCS Plus · 本地模拟预览'
+ )}],defaultPanelName:location.search.includes('updates=')?'background.update':location.search.includes('results=1')?'common.work-results':location.search.includes('search=1')?'common.online-search':'common.settings',title:'OCS Plus · 本地模拟预览'
 }});
 </script><link rel="stylesheet" href="/dist/style.css"></html>`;
 http
 	.createServer((req, res) => {
+		if (new URL(req.url, 'http://127.0.0.1').pathname === '/question.svg') {
+			res.setHeader('Content-Type', 'image/svg+xml');
+			res.end(
+				'<svg xmlns="http://www.w3.org/2000/svg" width="140" height="70"><rect width="140" height="70" fill="white"/><circle cx="40" cy="35" r="20" fill="#4263eb"/><circle cx="100" cy="35" r="20" fill="#14b8a6"/></svg>'
+			);
+			return;
+		}
 		if (new URL(req.url, 'http://127.0.0.1').pathname === '/') {
 			res.setHeader('Content-Type', 'text/html; charset=utf-8');
 			res.end(html);

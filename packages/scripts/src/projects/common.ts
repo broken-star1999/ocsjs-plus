@@ -12,7 +12,11 @@ import {
 	resolveAISelection,
 	AIProviderSource,
 	AIModel,
-	AnswererWrapper
+	AnswererWrapper,
+	AICallRecord,
+	updateAICallRecord,
+	observeAICallRecords,
+	getAICallRecords
 } from '@ocsjs/core';
 import { $message, h, $gm, $store, Project, Script, $modal, $ui, MessageElement, cors } from 'easy-us';
 import { CXProject, ICourseProject, IcveMoocProject, YKTProject, ZHSProject, ZJYProject } from '../index';
@@ -31,6 +35,8 @@ import { confirmRiskyAnswerWrappers } from '../utils/answer-wrapper-security';
 import { initEdgeMinimize } from '../utils/edge-minimize';
 import { openAIProviderManager } from '../utils/ai-provider-manager';
 import { PLUS_REPO_URL } from '../utils/plus-update';
+import { openAICallLog } from '../utils/ai-call-log-panel';
+import { readSearchSelection, expandSearchImages, SearchSelection } from '../utils/online-search-selection';
 import {
 	createAnswererWrapperSection,
 	createSteps,
@@ -41,6 +47,8 @@ import {
 } from '../utils/ui';
 
 const TAB_WORK_RESULTS_KEY = 'common.work-results.results';
+let onlineSelection: SearchSelection = { text: '', images: [] };
+const onlineSelectionListeners = new Set<() => void>();
 
 /**
  * 搜题气泡文本处理：将题目中的图片 URL 替换为 [图片N] 占位符。
@@ -260,6 +268,14 @@ export const CommonProject = Project.create({
 								}
 							});
 						};
+					}
+				},
+				aiCallLog: {
+					label: 'AI 调用记录',
+					defaultValue: '查看调用记录',
+					attrs: { type: 'button' },
+					onload() {
+						this.onclick = openAICallLog;
 					}
 				},
 				aiSelectedModel: {
@@ -1197,6 +1213,14 @@ export const CommonProject = Project.create({
 			},
 			// 实时更新内部设置
 			oncomplete() {
+				// The shared tab ID exists only after start(); register cross-frame events after that.
+				const report = cors.defineTopFunction((record: AICallRecord) => updateAICallRecord(record));
+				if (self !== top) {
+					getAICallRecords().forEach((record) => report(record));
+					observeAICallRecords((record) => {
+						if (record) report(record);
+					});
+				}
 				this.methods.ensureAIProviders();
 				AnswerWrapperHandlerConfig.timeout_seconds = this.cfg.answerWrapperHandlerTimeout;
 				this.onConfigChange('answerWrapperHandlerTimeout', (sec) => {
@@ -1590,7 +1614,7 @@ export const CommonProject = Project.create({
 				selectSearch: {
 					label: '划词搜索',
 					defaultValue: true,
-					attrs: { type: 'checkbox', title: '使用鼠标滑动选择页面中的题目进行搜索。' }
+					attrs: { type: 'checkbox', title: '划选页面中的题目文字和图片，预览后点击搜索。' }
 				},
 				searchValue: {
 					sync: true,
@@ -1607,38 +1631,100 @@ export const CommonProject = Project.create({
 				}
 			},
 			oncomplete() {
+				const select = cors.defineTopFunction((selection: SearchSelection) => {
+					onlineSelection = selection;
+					CommonProject.scripts.onlineSearch.cfg.searchValue = selection.text;
+					onlineSelectionListeners.forEach((listener) => listener());
+				});
 				document.addEventListener(
 					'selectionchange',
 					debounce(() => {
 						if (this.cfg.selectSearch) {
-							const val = document.getSelection()?.toString() || '';
-							if (val) {
-								this.cfg.searchValue = val;
-							}
+							const selection = readSearchSelection(document.getSelection());
+							if (selection) select(selection);
 						}
 					}, 500)
 				);
 			},
 			onrender({ panel }) {
 				const content = h('div', '', (content) => {
+					panel.classList.add('ocs-online-search-panel');
+					content.className = 'ocs-online-results';
 					content.style.marginBottom = '12px';
 				});
+				const preview = h('div', { className: 'ocs-online-preview' });
+				const renderPreview = () => {
+					if (!preview.isConnected) return;
+					const images = onlineSelection.images.filter((image) => this.cfg.searchValue.includes(image.marker));
+					preview.replaceChildren(
+						h(
+							'small',
+							images.length
+								? `已选 ${images.length} 张图片。确认文字和图片后点击搜索；可移除误选图片。`
+								: '划选网页中的文字和图片后，在这里预览。暂不支持截图、背景图或 Canvas。'
+						)
+					);
+					const grid = h('div', { className: 'ocs-online-image-grid' });
+					if (images.length) preview.append(grid);
+					for (const image of images) {
+						const remove = h('button', { className: 'base-style-button-secondary' }, '移除 ' + image.marker);
+						remove.onclick = () => {
+							this.cfg.searchValue = this.cfg.searchValue.split(image.marker).join('');
+							renderPreview();
+						};
+						grid.append(
+							h('div', { className: 'ocs-online-image' }, [
+								h('img', {
+									src: image.url,
+									alt: image.marker,
+									style: {
+										width: '100%',
+										height: '64px',
+										objectFit: 'contain',
+										border: '1px solid #80808033',
+										borderRadius: '6px'
+									}
+								}),
+								remove
+							])
+						);
+					}
+				};
+				const onSelection = () => {
+					if (!preview.isConnected) {
+						onlineSelectionListeners.delete(onSelection);
+						this.offConfigChange(selectionListener);
+					} else renderPreview();
+				};
+				const selectionListener = this.onConfigChange('searchValue', onSelection);
+				onlineSelectionListeners.add(onSelection);
 
 				const search = async (value: string) => {
 					const wrappers = CommonProject.scripts.settings.methods.getWorkOptions().answererWrappers;
 					if (wrappers.length === 0) {
-						$modal.alert({ content: '请先在 通用-全局设置 配置题库，才能进行在线搜题。' });
+						$modal.alert({ content: '请先在 通用-全局设置 选择 AI 答题模型或配置题库。' });
 						return;
 					}
 
 					content.replaceChildren(h('span', '搜索中...'));
 
 					if (value) {
+						const images = onlineSelection.images.filter((image) => value.includes(image.marker));
+						if (images.length && !CommonProject.scripts.settings.cfg.imageOptimize) {
+							throw new Error('本题包含选区图片，请先在全局设置中开启“图片题优化”。');
+						}
+						if (images.length && wrappers.some((wrapper) => wrapper.ai && !wrapper.ai.vision)) {
+							throw new Error('当前 AI 模型未开启识图，请在模型设置中启用图片输入，并确认模型支持图片。');
+						}
 						const t = Date.now();
-						const { env } = await buildAnswererEnv({
-							title: value,
+						const { env, imageUrls } = await buildAnswererEnv({
+							title: expandSearchImages(value, images),
+							titleImages: images.length ? images.map((image) => image.url) : undefined,
 							enableImageOptimize: CommonProject.scripts.settings.cfg.imageOptimize
 						});
+						if (images.some((image) => !imageUrls.includes(image.url))) {
+							throw new Error('部分选区图片读取失败，请重新划选或移除失败图片后再搜索。未发送不完整题目。');
+						}
 						const infos = await defaultAnswerWrapperHandler(wrappers, env);
 						// 耗时计算
 						const resume = ((Date.now() - t) / 1000).toFixed(2);
@@ -1656,10 +1742,16 @@ export const CommonProject = Project.create({
 									h(SearchInfosElement, {
 										infos: infos.map((info) => ({
 											results: info.results.map(
-												(res) => [res.question, res.answer, res.extra_data] as [string, string, object]
+												(res) =>
+													[res.question === env.title ? value : res.question, res.answer, res.extra_data] as [
+														string,
+														string,
+														object
+													]
 											),
 											homepage: info.homepage,
 											name: info.name,
+											ai: info.ai,
 											error: info.error
 										})),
 										question: value
@@ -1667,7 +1759,8 @@ export const CommonProject = Project.create({
 								],
 								(div) => {
 									div.classList.add('card');
-									div.style.width = '480px';
+									div.style.width = '100%';
+									div.style.boxSizing = 'border-box';
 								}
 							)
 						);
@@ -1679,13 +1772,26 @@ export const CommonProject = Project.create({
 				const button = h('button', '搜索', (button) => {
 					button.className = 'base-style-button';
 					button.style.width = '120px';
-					button.onclick = () => {
-						search(this.cfg.searchValue);
+					button.onclick = async () => {
+						button.disabled = true;
+						try {
+							await search(this.cfg.searchValue.trim());
+						} catch (error) {
+							content.replaceChildren(h('span', error instanceof Error ? error.message : '搜题失败，请重试'));
+						} finally {
+							button.disabled = false;
+						}
 					};
 				});
-				const searchContainer = h('div', { style: { textAlign: 'end' } }, [button]);
+				const logs = h('button', { className: 'base-style-button-secondary' }, 'AI 调用记录');
+				logs.onclick = openAICallLog;
+				const searchContainer = h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: '8px' } }, [
+					logs,
+					button
+				]);
 
-				panel.body.append(h('div', [content, searchContainer]));
+				panel.body.append(h('div', [preview, content, searchContainer]));
+				renderPreview();
 			}
 		}),
 		edgeMinimize: new Script({

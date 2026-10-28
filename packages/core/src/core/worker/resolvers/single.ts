@@ -6,6 +6,8 @@ import { StringUtils } from '../../../utils/string';
 export interface SingleResolveResult {
 	finish: boolean;
 	option?: string;
+	/** Exact DOM position when explicitly resolving a choice letter. */
+	optionIndex?: number;
 	ratings?: number[];
 	allAnswer?: string[];
 	options?: string[];
@@ -24,7 +26,22 @@ export interface SingleResolveResult {
  * @param options   选项文本列表
  * @param separators 答案分隔符
  */
-export function resolveSingle(answers: string[], options: string[], separators?: string[]): SingleResolveResult {
+export function resolveSingle(
+	answers: string[],
+	options: string[],
+	separators?: string[],
+	preferPlainAnswer = false
+): SingleResolveResult {
+	// AI's output contract is a choice letter, not an option's text. Reuse the
+	// existing letter parser before text matching so an option containing "B"
+	// cannot steal a response intended to select the second option.
+	if (preferPlainAnswer) {
+		const answer = answers.length === 1 ? resolvePlainAnswer(StringUtils.nowrap(answers[0], '').trim()) : undefined;
+		const index = answer?.length === 1 ? answer.charCodeAt(0) - 65 : -1;
+		return index >= 0 && index < options.length
+			? { finish: true, option: options[index], optionIndex: index }
+			: { finish: false };
+	}
 	const allAnswer = answers.map((a) => splitAnswer(a, separators)).flat();
 	const optionStrings = options.map(removeRedundant);
 

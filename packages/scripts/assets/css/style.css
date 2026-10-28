@@ -1943,6 +1943,10 @@ modal-element .modal-cancel-button:hover {
 .accordion-card.expanded .accordion-card-chevron {
   transform: rotate(0deg);
 }
+.accordion-card-always-visible {
+  border-top: 1px solid #eef2f7;
+  padding: 8px 12px;
+}
 .accordion-card-body {
   display: none;
   border-top: 1px solid #eef2f7;
@@ -2235,4 +2239,89 @@ modal-element .modal-cancel-button:hover {
 .text-secondary {
   color: #606266;
   font-size: 12px;
+}
+.ocs-online-search-panel {
+  width: min(520px, calc(100vw - 64px));
+  max-height: min(700px, 72vh);
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-x: hidden;
+}
+.ocs-online-search-panel .configs {
+  width: 100%;
+  table-layout: fixed;
+}
+.ocs-online-search-panel .configs config-element label {
+  width: 80px;
+  box-sizing: border-box;
+  white-space: normal;
+}
+.ocs-online-search-panel .configs textarea {
+  min-width: 0 !important;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+.ocs-online-search-panel .script-panel-body,
+.ocs-online-search-panel .ocs-online-results {
+  min-width: 0;
+  max-width: 100%;
+}
+.ocs-online-search-panel .ocs-online-results {
+  overflow-wrap: anywhere;
+}
+.ocs-online-search-panel search-infos-element img {
+  max-width: 100%;
+  height: auto;
+}
+.ocs-online-search-panel search-infos-element {
+  max-height: none !important;
+  overflow: visible;
+}
+.ocs-online-search-panel .ai-search-info .accordion-card-body {
+  max-height: none;
+  overflow: visible;
+}
+.ocs-online-preview {
+  margin-bottom: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ocs-online-preview > small {
+  display: block;
+}
+.ocs-online-image-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 190px;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+.ocs-online-image {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ocs-online-image img {
+  box-sizing: border-box;
+}
+.ocs-online-image button {
+  width: 100%;
+  white-space: normal;
+  font-size: 11px;
+}
+.ai-search-info {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.ai-search-info .accordion-card-header a {
+  min-width: 0;
+}
+.ai-search-info .answer code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

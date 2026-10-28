@@ -38,6 +38,8 @@ export function createAccordionCard(options: {
 	headerTrailing?: (HTMLElement | string)[];
 	/** 详情区内容 */
 	body: (HTMLElement | string)[];
+	/** 始终显示在头部下方，不随详情区收起（如 AI 答案）。 */
+	alwaysVisibleBody?: (HTMLElement | string)[];
 	/** 默认是否展开 */
 	expanded?: boolean;
 	/** 卡片附加 class */
@@ -54,7 +56,11 @@ export function createAccordionCard(options: {
 		h('span', { className: 'accordion-card-chevron', innerHTML: CHEVRON_SVG })
 	]);
 	header.onclick = () => card.classList.toggle('expanded');
-	card.append(header, h('div', { className: 'accordion-card-body' }, options.body));
+	card.append(header);
+	if (options.alwaysVisibleBody?.length) {
+		card.append(h('div', { className: 'accordion-card-always-visible' }, options.alwaysVisibleBody));
+	}
+	card.append(h('div', { className: 'accordion-card-body' }, options.body));
 	return card;
 }
 
