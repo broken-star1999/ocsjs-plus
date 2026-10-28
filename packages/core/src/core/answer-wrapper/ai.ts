@@ -1,5 +1,6 @@
 /* global GM_getValue, GM_xmlhttpRequest */
 import type { SearchInformation } from './interface';
+import { AICallRecord, AI_REASONING_MAX_LENGTH, readAIUsage, updateAICallRecord } from './ai-call-log';
 
 export const AI_API_KEY_STORAGE = 'ocs.ai.apiKey';
 
@@ -11,6 +12,7 @@ export interface AIAnswererConfig {
 	timeoutSeconds?: number;
 	extraBody?: Record<string, unknown>;
 	label?: string;
+	providerName?: string;
 }
 
 export interface AIModel {
@@ -221,6 +223,20 @@ export async function searchAIAnswer(
 	timeoutMs: number
 ): Promise<SearchInformation> {
 	const info: SearchInformation = { name: config.label || 'AI · ' + config.model, results: [] };
+	const record: AICallRecord = {
+		id: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2),
+		startedAt: Date.now(),
+		provider: config.providerName || config.label || '自定义接口',
+		model: config.model,
+		question: (question.suggestion_title || question.title)
+			.replace(/data:image\/[^\s]+/gi, '[图片]')
+			.replace(/https?:\/\/\S+/gi, '[链接]')
+			.slice(0, 300),
+		imageCount: question.images?.length || 0,
+		status: 'pending'
+	};
+	info.ai = { call: record };
+	updateAICallRecord(record);
 	try {
 		const url = normalizeAIEndpoint(config.endpoint);
 		const response = await requestAIJSON(
@@ -230,21 +246,36 @@ export async function searchAIAnswer(
 			buildAIRequest(config, question),
 			config.sourceId
 		);
+		record.usage = readAIUsage(response?.usage);
 		const choice = response?.choices?.[0];
+		const reasoning = choice?.message?.reasoning_content;
+		if (typeof reasoning === 'string' && reasoning.trim()) {
+			info.ai.reasoning = reasoning.slice(0, AI_REASONING_MAX_LENGTH);
+			info.ai.reasoningTruncated = reasoning.length > AI_REASONING_MAX_LENGTH;
+		}
 		if (choice?.finish_reason && choice.finish_reason !== 'stop') {
 			throw new Error('AI 回答未正常完成：' + choice.finish_reason);
 		}
 		if (choice?.message?.refusal) throw new Error('AI 未能回答本题');
 		const answers = parseAIAnswers(choice?.message?.content, question.type);
-		if (answers)
+		if (answers) {
 			info.results.push({
 				question: question.title,
 				answer: answers.join('#'),
 				extra_data: { ai: true, ai_native: true, answers }
 			});
-		else info.error = 'AI 无法确定答案，本题跳过';
+			record.status = 'success';
+		} else {
+			info.error = 'AI 无法确定答案，本题跳过';
+			record.status = 'uncertain';
+		}
 	} catch (error) {
 		info.error = error instanceof Error ? error.message : 'AI 请求失败';
+		record.status = 'error';
+	} finally {
+		record.error = info.error;
+		record.durationMs = Date.now() - record.startedAt;
+		updateAICallRecord(record);
 	}
 	return info;
 }

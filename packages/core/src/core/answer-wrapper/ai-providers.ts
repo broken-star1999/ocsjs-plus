@@ -33,6 +33,7 @@ export function resolveAISelection(state: AIProviderState): AIAnswererConfig | u
 		if (model)
 			return {
 				label: source.name + ' / ' + model.name,
+				providerName: source.name,
 				endpoint: source.endpoint,
 				sourceId: source.id,
 				model: model.id,

@@ -7,6 +7,8 @@ export interface Result {
 
 /** 题库查询信息 */
 export interface SearchInformation {
+	/** Native AI call metadata and optional provider-returned reasoning. */
+	ai?: import('./ai-call-log').AICallDetails;
 	results: Result[];
 	name: string;
 	url?: string;

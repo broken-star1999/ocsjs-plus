@@ -1943,6 +1943,10 @@ modal-element .modal-cancel-button:hover {
 .accordion-card.expanded .accordion-card-chevron {
   transform: rotate(0deg);
 }
+.accordion-card-always-visible {
+  border-top: 1px solid #eef2f7;
+  padding: 8px 12px;
+}
 .accordion-card-body {
   display: none;
   border-top: 1px solid #eef2f7;

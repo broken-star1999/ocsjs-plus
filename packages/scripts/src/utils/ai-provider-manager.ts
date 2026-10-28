@@ -330,6 +330,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 		const info = await searchAIAnswer(
 			{
 				endpoint: source.endpoint,
+				providerName: source.name,
 				sourceId: source.id,
 				model: model.id,
 				vision: model.vision,

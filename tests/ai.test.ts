@@ -9,6 +9,14 @@ import {
 } from '../packages/core/src/core/answer-wrapper/ai';
 import { defaultAnswerWrapperHandler } from '../packages/core/src/core/answer-wrapper/answer.wrapper.handler';
 import { createDefaultQuestionResolver } from '../packages/core/src/core/worker/question.resolver';
+import {
+	getAICallRecords,
+	clearAICallRecords,
+	observeAICallRecords,
+	AI_REASONING_MAX_LENGTH
+} from '../packages/core/src/core/answer-wrapper/ai-call-log';
+import { createAICallDetails } from '../packages/scripts/src/elements/ai-call-details';
+import { CustomOCSWorker } from '../packages/core/src/core/worker/worker';
 
 async function main() {
 	const config = { endpoint: 'https://example.com/v1/', model: 'test-model', vision: false };
@@ -59,7 +67,15 @@ async function main() {
 		request.onload({
 			status: 200,
 			responseText: JSON.stringify({
-				choices: [{ finish_reason: 'stop', message: { content: '{"answers":["2"],"uncertain":false}' } }]
+				choices: [
+					{
+						finish_reason: 'stop',
+						message: {
+							reasoning_content: 'provider-reasoning-only',
+							content: '{"answers":["2"],"uncertain":false}'
+						}
+					}
+				]
 			})
 		});
 	};
@@ -72,6 +88,35 @@ async function main() {
 	assert.equal(info.results[0].answer, '2');
 	assert.deepEqual((info.results[0].extra_data as any).answers, ['2']);
 	assert.ok(!JSON.stringify(info).includes('test-only-key'));
+	assert.equal(getAICallRecords()[0].status, 'success');
+	assert.equal(getAICallRecords()[0].model, config.model);
+	assert.equal(typeof getAICallRecords()[0].durationMs, 'number');
+	assert.equal(getAICallRecords()[0].usage, undefined);
+	assert.ok(!JSON.stringify(getAICallRecords()).includes('test-only-key'));
+	assert.equal(info.ai?.reasoning, 'provider-reasoning-only');
+	assert.equal(info.ai?.call.status, 'success');
+	assert.ok(!JSON.stringify(getAICallRecords()).includes('provider-reasoning-only'));
+
+	// Details survive the automatic worker's simplified results, without entering answers.
+	let displayed: any;
+	const worker = new CustomOCSWorker({
+		questions: () => [{ text: question.title, type: 'single' }],
+		answerer: async () => [info],
+		resolver: () => ({ finish: true }),
+		period: 0,
+		onResultsUpdate: (result) => {
+			displayed = JSON.parse(JSON.stringify(result));
+		}
+	});
+	await worker.doWork();
+	assert.equal(displayed.searchInfos[0].ai.reasoning, 'provider-reasoning-only');
+	assert.equal(displayed.searchInfos[0].results[0][1], '2');
+	const unsafeReasoning = '<img src=x onerror="alert(1)">\n普通文字';
+	const details = createAICallDetails({ call: info.ai!.call, reasoning: unsafeReasoning });
+	assert.equal(details.querySelector('.ai-reasoning-content')?.textContent, unsafeReasoning);
+	assert.equal(details.querySelectorAll('img, script').length, 0);
+	assert.equal(details.querySelector('details')?.hasAttribute('open'), false);
+	assert.match(createAICallDetails({ call: info.ai!.call }).textContent || '', /接口未返回思考内容/);
 
 	// Model discovery uses the same scoped authentication and accepts both minimal and DeepSeek metadata.
 	runtime.GM_xmlhttpRequest = (request: any) => {
@@ -174,6 +219,7 @@ async function main() {
 	assert.match(unauthorized.error || '', /401/);
 	assert.ok(!JSON.stringify(unauthorized).includes('test-only-key'));
 	assert.equal(unauthorized.results.length, 0);
+	assert.equal(unauthorized.ai?.call.status, 'error');
 	runtime.GM_xmlhttpRequest = (request: any) => request.ontimeout();
 	assert.match((await searchAIAnswer(config, question, 1)).error || '', /超时/);
 	runtime.GM_xmlhttpRequest = (request: any) =>
@@ -184,6 +230,38 @@ async function main() {
 			})
 		});
 	assert.equal((await searchAIAnswer(config, question, 1000)).results.length, 0);
+	assert.equal(getAICallRecords()[0].status, 'error');
+
+	// Concurrent calls retain independent IDs and usage; pending and failures are observable.
+	clearAICallRecords();
+	const requests: any[] = [];
+	runtime.GM_xmlhttpRequest = (request: any) => requests.push(request);
+	const first = searchAIAnswer(config, { title: '第一题' }, 1000);
+	const second = searchAIAnswer(config, { title: '第二题' }, 1000);
+	assert.equal(getAICallRecords().filter((r) => r.status === 'pending').length, 2);
+	requests[1].onload({
+		status: 200,
+		responseText: JSON.stringify({
+			usage: {
+				prompt_tokens: 12,
+				completion_tokens: 8,
+				total_tokens: 20
+			},
+			choices: [{ finish_reason: 'stop', message: { content: '{"answers":[],"uncertain":true}' } }]
+		})
+	});
+	requests[0].ontimeout();
+	await Promise.all([first, second]);
+	assert.equal(new Set(getAICallRecords().map((r) => r.id)).size, 2);
+	assert.equal(getAICallRecords().find((r) => r.question === '第一题')?.status, 'error');
+	assert.deepEqual(getAICallRecords().find((r) => r.question === '第二题')?.usage, { input: 12, output: 8, total: 20 });
+	assert.equal(getAICallRecords().find((r) => r.question === '第二题')?.status, 'uncertain');
+	let notifications = 0;
+	const unobserve = observeAICallRecords(() => notifications++);
+	clearAICallRecords();
+	assert.equal(notifications, 1);
+	unobserve();
+	assert.equal(getAICallRecords().length, 0);
 	runtime.GM_xmlhttpRequest = (request: any) =>
 		request.onload({
 			status: 200,
@@ -194,6 +272,25 @@ async function main() {
 			})
 		});
 	assert.equal((await searchAIAnswer(config, question, 1000)).results.length, 0);
+	const longReasoning = '思'.repeat(AI_REASONING_MAX_LENGTH + 10);
+	runtime.GM_xmlhttpRequest = (request: any) =>
+		request.onload({
+			status: 200,
+			responseText: JSON.stringify({
+				usage: { prompt_tokens: 8, completion_tokens: 4, total_tokens: 12 },
+				choices: [
+					{
+						finish_reason: 'stop',
+						message: { reasoning_content: longReasoning, content: '{"answers":["2"],"uncertain":false}' }
+					}
+				]
+			})
+		});
+	const long = await searchAIAnswer(config, question, 1000);
+	assert.equal(long.ai?.reasoning?.length, AI_REASONING_MAX_LENGTH);
+	assert.equal(long.ai?.reasoningTruncated, true);
+	assert.equal(long.ai?.call.usage?.total, 12);
+	assert.equal(long.results[0].answer, '2');
 	delete runtime.GM_getValue;
 	delete runtime.GM_xmlhttpRequest;
 	console.log(

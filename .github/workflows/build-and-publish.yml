@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '已审核的正式版本标签，如 5.2.4 或 v5.2.4；须与 package.json 一致'
+        description: '已审核的版本标签，如 v0.1.2 或 v0.1.2-beta.1；须与 package.json 一致'
         required: true
         type: string
       notes:
@@ -34,6 +34,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Verify release identity
+        id: identity
         run: |
           git show-ref --verify "refs/tags/$RELEASE_TAG"
           test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
@@ -42,12 +43,14 @@ jobs:
           const version = semver.valid(process.env.RELEASE_TAG);
           const pkg = require('./package.json');
           const config = require('./packages/scripts/src/config/plus-repository.json');
-          if (!version || semver.prerelease(version) || version !== pkg.version) {
-            throw new Error('正式发布标签须与 package.json 的版本一致');
+          if (!version || version !== pkg.version) {
+            throw new Error('发布标签须与 package.json 的版本一致');
           }
           if (config.repository !== process.env.GITHUB_REPOSITORY) {
             throw new Error('发布仓库与脚本更新源不一致');
           }
+          require('fs').appendFileSync(process.env.GITHUB_OUTPUT,
+            `prerelease=${!!semver.prerelease(version)}\n`);
           NODE
       - run: npm test
       - run: npm run build
@@ -56,6 +59,8 @@ jobs:
         with:
           tag: ${{ inputs.tag }}
           name: OCS Plus ${{ inputs.tag }}
+          prerelease: ${{ steps.identity.outputs.prerelease == 'true' }}
+          makeLatest: ${{ steps.identity.outputs.prerelease == 'true' && 'false' || 'true' }}
           artifacts: release/ocs.user.js,release/ocs.meta.js
           artifactErrorsFailBuild: true
           allowUpdates: true

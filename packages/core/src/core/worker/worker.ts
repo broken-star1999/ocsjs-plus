@@ -507,6 +507,7 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 			try {
 				const infos = await this.opts.answerer(question.text);
 				results[index].searchInfos = infos.map((i) => ({
+					ai: i.ai,
 					name: i.name,
 					homepage: i.homepage,
 					results: i.results.map((r) => [r.question, r.answer, r.extra_data || {}]),

@@ -3,6 +3,7 @@ import { $ui, h } from 'easy-us';
 import { createQuestionTitleExtra } from '../utils';
 import { createAccordionCard } from '../utils/ui';
 import DOMPurify from 'dompurify';
+import { createAICallDetails } from './ai-call-details';
 
 /**
  * 图片链接正则
@@ -95,7 +96,70 @@ export class SearchInfosElement extends HTMLElement {
 				);
 				homeLink.onclick = (e) => e.stopPropagation();
 
-				// 口风琴式下拉卡片：点击头部整行展开/收起搜索结果（组件见 utils/ui.ts，默认展开）
+				const isAI = !!info.ai || info.results.some((ans) => (ans[2] as { ai_native?: boolean })?.ai_native);
+				const results = (
+					info.error
+						? /** 显示错误信息 */
+						  [h('span', { className: 'error' }, [info.error || '网络错误或者未知错误'])]
+						: /** 显示结果列表 */
+						  []
+				).concat([
+					...info.results.map((ans) => {
+						const title = transformImgLinkOfQuestion(ans[0] || this.question || '无');
+						// 先按答案分隔符拆分原始答案，再逐段转换图片：
+						// 反之若先转换，img 标签的 src 中 & 被转义为 &amp;，其分号会被 splitAnswer 的 ';' 分隔符误切
+						const aiData = ans[2] as { ai_native?: boolean; answers?: string[] } | undefined;
+						const parts = aiData?.ai_native && aiData.answers ? aiData.answers : splitAnswer(ans[1] || '无');
+						const answer = parts.map((a) => transformImgLinkOfQuestion(a));
+						/** 返回的题目和原题完全匹配时，不再重复显示题目 */
+						const isSameQuestion = normalizeQuestion(ans[0] || '') === normalizeQuestion(this.question || '');
+						const extra_data = JSON.parse(JSON.stringify(ans[2] || {}));
+
+						if (extra_data.ai) {
+							extra_data.tags = extra_data.tags || [];
+							extra_data.tags.push({
+								text: 'AI',
+								title: '此答案由 AI 生成，仅供参考',
+								color: 'blue'
+							});
+						}
+
+						if (extra_data.cache) {
+							extra_data.tags = extra_data.tags || [];
+							extra_data.tags.push({
+								text: '题库缓存',
+								title:
+									'此答案来自本地缓存，由在线题库搜索后保存在本地。\n- 清空缓存：请前往通用-全局设置-题库缓存功能-管理缓存\n- 关闭缓存：请前往通用-全局设置-题库缓存功能',
+								color: 'gray'
+							});
+						}
+
+						return h('div', { className: 'search-result' }, [
+							/** 题目（和原题完全匹配时不显示，避免重复） */
+							...(isSameQuestion ? [] : [h('div', { className: 'question' }, [h('span', { innerHTML: title })])]),
+							/** 答案 */
+							h('div', { className: 'answer' }, [
+								h('span', '答案：'),
+								...(extra_data.tags
+									? extra_data.tags.map((tag: { text: string; title: string; color: string }) =>
+											$ui.tooltip(
+												h('span', {
+													className: 'search-result-answer-tag ' + tag.color,
+													innerHTML: tag.text,
+													title: tag.title,
+													dataset: { title: tag.title }
+												})
+											)
+									  )
+									: []),
+								...answer.map((a, index) =>
+									h('code', aiData?.ai_native ? { textContent: parts[index] } : { innerHTML: DOMPurify.sanitize(a) })
+								)
+							])
+						]);
+					})
+				]);
+				// AI 答案/错误常驻，头部箭头只控制调用详情和思考内容。
 				return createAccordionCard({
 					className: 'search-info-details',
 					expanded: true,
@@ -103,67 +167,8 @@ export class SearchInfosElement extends HTMLElement {
 						homeLink,
 						...(info.error ? [] : [h('span', { className: 'text-secondary' }, ` 共 ${info.results.length} 个结果`)])
 					],
-					body: (info.error
-						? /** 显示错误信息 */
-						  [h('span', { className: 'error' }, [info.error || '网络错误或者未知错误'])]
-						: /** 显示结果列表 */
-						  []
-					).concat([
-						...info.results.map((ans) => {
-							const title = transformImgLinkOfQuestion(ans[0] || this.question || '无');
-							// 先按答案分隔符拆分原始答案，再逐段转换图片：
-							// 反之若先转换，img 标签的 src 中 & 被转义为 &amp;，其分号会被 splitAnswer 的 ';' 分隔符误切
-							const aiData = ans[2] as { ai_native?: boolean; answers?: string[] } | undefined;
-							const parts = aiData?.ai_native && aiData.answers ? aiData.answers : splitAnswer(ans[1] || '无');
-							const answer = parts.map((a) => transformImgLinkOfQuestion(a));
-							/** 返回的题目和原题完全匹配时，不再重复显示题目 */
-							const isSameQuestion = normalizeQuestion(ans[0] || '') === normalizeQuestion(this.question || '');
-							const extra_data = JSON.parse(JSON.stringify(ans[2] || {}));
-
-							if (extra_data.ai) {
-								extra_data.tags = extra_data.tags || [];
-								extra_data.tags.push({
-									text: 'AI',
-									title: '此答案由 AI 生成，仅供参考',
-									color: 'blue'
-								});
-							}
-
-							if (extra_data.cache) {
-								extra_data.tags = extra_data.tags || [];
-								extra_data.tags.push({
-									text: '题库缓存',
-									title:
-										'此答案来自本地缓存，由在线题库搜索后保存在本地。\n- 清空缓存：请前往通用-全局设置-题库缓存功能-管理缓存\n- 关闭缓存：请前往通用-全局设置-题库缓存功能',
-									color: 'gray'
-								});
-							}
-
-							return h('div', { className: 'search-result' }, [
-								/** 题目（和原题完全匹配时不显示，避免重复） */
-								...(isSameQuestion ? [] : [h('div', { className: 'question' }, [h('span', { innerHTML: title })])]),
-								/** 答案 */
-								h('div', { className: 'answer' }, [
-									h('span', '答案：'),
-									...(extra_data.tags
-										? extra_data.tags.map((tag: { text: string; title: string; color: string }) =>
-												$ui.tooltip(
-													h('span', {
-														className: 'search-result-answer-tag ' + tag.color,
-														innerHTML: tag.text,
-														title: tag.title,
-														dataset: { title: tag.title }
-													})
-												)
-										  )
-										: []),
-									...answer.map((a, index) =>
-										h('code', aiData?.ai_native ? { textContent: parts[index] } : { innerHTML: DOMPurify.sanitize(a) })
-									)
-								])
-							]);
-						})
-					])
+					alwaysVisibleBody: isAI ? results : undefined,
+					body: isAI ? (info.ai ? [createAICallDetails(info.ai)] : []) : results
 				});
 			})
 		);
