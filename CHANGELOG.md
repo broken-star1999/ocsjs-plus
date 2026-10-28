@@ -1,6 +1,6 @@
 # Changelog
 
-## OCS Plus 5.2.3
+## OCS Plus 0.1.0 (2026-10-28)
 
 OCS Plus 首个独立发布版本，基于 OCS 5.2.3 扩展。
 
