@@ -10,7 +10,7 @@ export interface AIProviderSource {
 	/** Stable internal identity; display names and endpoints can be edited independently. */
 	id: string;
 	name: string;
-	preset: 'deepseek' | 'openai';
+	preset: 'deepseek' | 'mimo' | 'openai';
 	endpoint: string;
 	timeoutSeconds: number;
 	models: AIConfiguredModel[];

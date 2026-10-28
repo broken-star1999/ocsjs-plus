@@ -24,6 +24,40 @@ export interface AIProviderManagerOptions {
 }
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+const providerCards = [
+	{
+		id: 'deepseek',
+		name: 'DeepSeek',
+		icon: 'DS',
+		endpoint: 'https://api.deepseek.com',
+		description: 'DeepSeek 官方接口',
+		keywords: 'ds 深度求索'
+	},
+	{
+		id: 'mimo',
+		name: 'MiMo',
+		icon: 'mi',
+		endpoint: 'https://api.xiaomimimo.com/v1',
+		description: '小米 MiMo 官方接口',
+		keywords: '小米 xiaomi'
+	},
+	{
+		id: 'openai',
+		name: 'OpenAI',
+		icon: 'AI',
+		endpoint: 'https://api.openai.com/v1',
+		description: 'OpenAI 官方接口',
+		keywords: 'gpt chatgpt'
+	},
+	{
+		id: 'custom',
+		name: '自定义',
+		icon: '+',
+		endpoint: '',
+		description: 'OpenAI 兼容服务或自建网关',
+		keywords: 'custom compatible 中转 本地'
+	}
+] as const;
 /* eslint-disable max-len */
 const style = `
 .ocs-ai-manager{font:14px system-ui;color:inherit;min-height:420px}
@@ -42,7 +76,16 @@ const style = `
 .ocs-ai-manager .status{padding:10px 12px;background:#4263eb0d;border-radius:7px;margin-bottom:14px;white-space:pre-wrap;overflow-wrap:anywhere}
 .ocs-ai-manager .error{color:#c0392b}.ocs-ai-manager .muted{color:#718096}.ocs-ai-manager .danger{color:#c0392b}
 .ocs-ai-manager .empty{padding:30px 8px;color:#718096}.ocs-ai-manager .model-row button{white-space:nowrap}
+.ocs-ai-picker{min-height:0}.ocs-ai-picker .picker-heading{display:flex;justify-content:space-between;align-items:center;margin:18px 0 12px}
+.ocs-ai-picker .provider-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;max-height:52vh;overflow:auto;padding:2px}
+.ocs-ai-picker .provider-card{display:flex;align-items:center;gap:14px;text-align:left;min-height:100px;padding:18px;border:1px solid #dce3ed;border-radius:12px;color:inherit;background:transparent;transition:border-color .15s,background .15s}
+.ocs-ai-picker .provider-card:hover,.ocs-ai-picker .provider-card:focus-visible{border-color:#4263eb;background:#4263eb0d;outline:2px solid #4263eb33;outline-offset:1px}
+.ocs-ai-picker .provider-card strong{font-size:16px}.ocs-ai-picker .provider-card small{margin-top:6px;word-break:normal;line-height:1.5}
+.ocs-ai-picker .provider-icon{display:grid;place-items:center;flex-shrink:0;width:42px;height:42px;border-radius:12px;font-size:18px;font-weight:700;background:#4263eb12;color:#4263eb}
+.ocs-ai-picker .provider-icon.mimo{background:#ff690014;color:#e65e00;font-size:24px}.ocs-ai-picker .provider-icon.openai{background:#10977f14;color:#10977f}.ocs-ai-picker .provider-icon.custom{background:#71809614;color:#718096;font-size:28px;font-weight:400}
+.ocs-ai-picker .picker-note{margin:16px 0 0;line-height:1.6}.ocs-ai-picker .picker-empty{grid-column:1/-1;padding:28px 8px;text-align:center}
 @media(max-width:700px){.ocs-ai-manager .workbench{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.ocs-ai-manager aside{border:0;max-height:130px}.ocs-ai-manager .field{grid-template-columns:1fr;gap:4px}.ocs-ai-manager .model-row{flex-wrap:wrap}}
+@media(max-width:480px){.ocs-ai-picker .provider-grid{grid-template-columns:1fr}.ocs-ai-picker .provider-card{min-height:80px;padding:12px}}
 `;
 /* eslint-enable max-len */
 
@@ -106,6 +149,58 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 		};
 		if (dirty) confirm('当前提供商有未保存的修改，放弃这些修改并切换？', apply);
 		else apply();
+	};
+	const chooseProvider = () => {
+		const picker = h('div', { className: 'ocs-ai-manager ocs-ai-picker' });
+		const search = h('input', { className: 'search', placeholder: '搜索供应商', ariaLabel: '搜索供应商' });
+		const grid = h('div', { className: 'provider-grid' });
+		const count = h('span', { className: 'muted', role: 'status' });
+		const renderCards = () => {
+			const term = search.value.trim().toLowerCase();
+			const cards = providerCards.filter((card) =>
+				`${card.name} ${card.description} ${card.keywords}`.toLowerCase().includes(term)
+			);
+			count.textContent = `${cards.length} 个`;
+			grid.replaceChildren(
+				...cards.map((card) => {
+					const node = button(card.name, () => {
+						dialog?.remove();
+						select({
+							id: 'source-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+							name: card.id === 'custom' ? '自定义提供商' : card.name,
+							preset: card.id === 'custom' ? 'openai' : card.id,
+							endpoint: card.endpoint,
+							timeoutSeconds: 120,
+							models: [],
+							catalog: []
+						});
+					});
+					node.className = 'provider-card';
+					node.setAttribute('aria-label', card.name);
+					node.replaceChildren(
+						h('span', { className: 'provider-icon ' + card.id, ariaHidden: 'true' }, card.icon),
+						h('span', {}, [h('strong', card.name), h('small', card.description)])
+					);
+					return node;
+				})
+			);
+			if (!cards.length) grid.append(h('p', { className: 'muted picker-empty' }, '未找到供应商，请尝试其他关键词'));
+		};
+		search.oninput = renderCards;
+		renderCards();
+		picker.append(
+			h('style', style),
+			search,
+			h('div', { className: 'picker-heading' }, [h('strong', '选择供应商'), count]),
+			grid,
+			h('p', { className: 'muted picker-note' }, '选择供应商后，填写 API Key 并获取模型；自定义支持 OpenAI 兼容服务。')
+		);
+		const dialog: HTMLDivElement | undefined = $modal.simple({
+			title: '新增模型提供商',
+			width: 740,
+			content: picker,
+			footer: h('div', {}, [button('取消', () => dialog?.remove())])
+		});
 	};
 	const saveDraft = (): AIProviderSource => {
 		if (!draft) throw new Error('请先选择或新增提供商');
@@ -315,20 +410,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 	function render() {
 		const state = options.read();
 		sidebar.replaceChildren(
-			h('div', { className: 'toolbar' }, [
-				h('strong', '提供商源'),
-				button('＋ 新增', () => {
-					select({
-						id: 'source-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
-						name: '新提供商',
-						preset: 'openai',
-						endpoint: '',
-						timeoutSeconds: 120,
-						models: [],
-						catalog: []
-					});
-				})
-			]),
+			h('div', { className: 'toolbar' }, [h('strong', '提供商源'), button('＋ 新增', chooseProvider)]),
 			...state.sources.map((source) => {
 				const node = button(source.name, () => select(source));
 				node.className = 'source' + (source.id === selectedId ? ' selected' : '');
@@ -356,12 +438,14 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 		}
 		presetInput = h('select', {}, [
 			h('option', { value: 'openai', text: 'OpenAI 兼容 / 自定义网关' }),
-			h('option', { value: 'deepseek', text: 'DeepSeek' })
+			h('option', { value: 'deepseek', text: 'DeepSeek' }),
+			h('option', { value: 'mimo', text: 'MiMo' })
 		]);
 		presetInput.value = draft.preset;
 		presetInput.onchange = () => {
 			dirty = true;
 			if (presetInput.value === 'deepseek') endpointInput.value = 'https://api.deepseek.com';
+			if (presetInput.value === 'mimo') endpointInput.value = 'https://api.xiaomimimo.com/v1';
 		};
 		for (const input of [nameInput, endpointInput, timeoutInput, keyInput])
 			input.oninput = () => {
