@@ -96,6 +96,11 @@ async function createUserJs() {
 				icon: 'https://cdn.ocsjs.com/logo.png',
 				connect: [
 					'*',
+					// Declare known services explicitly; wildcard custom hosts may still require manager approval.
+					'api.github.com',
+					'api.deepseek.com',
+					'api.xiaomimimo.com',
+					'api.openai.com',
 					'enncy.cn',
 					'icodef.com',
 					'ocsjs.com',

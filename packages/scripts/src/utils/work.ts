@@ -495,7 +495,7 @@ export const closeAnswerWrapperEmptyWarning = cors.defineTopFunction(() => {
  * @param options.optionsTransform 选项转换函数（可选），接收 (elements, ctx)，返回选项文本字符串；
  *   默认取 ctx.elements.options 的 innerText 拼接
  * @param options.answererWrappers 题库配置
- * @param options.period 搜题间隔（秒），默认 3
+ * @param options.period 搜题间隔（秒），默认 1
  */
 export function createCommonAnswerer(options: {
 	titleTransform: (elements: any, ctx: WorkContext<any>) => string | { text: string; images?: string[] };
@@ -524,7 +524,7 @@ export function createCommonAnswerer(options: {
 		const titleImages = titleResult.images;
 
 		const search = async () => {
-			await $.sleep((options.period ?? 3) * 1000);
+			await $.sleep((options.period ?? 1) * 1000);
 			const optResult = normalize(
 				options.optionsTransform
 					? options.optionsTransform(elements, ctx)

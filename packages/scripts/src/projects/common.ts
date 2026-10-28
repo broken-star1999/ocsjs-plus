@@ -30,6 +30,7 @@ import { getAnswererConfigProvider, openAnswererConnect, waitForAnswererConfig }
 import { confirmRiskyAnswerWrappers } from '../utils/answer-wrapper-security';
 import { initEdgeMinimize } from '../utils/edge-minimize';
 import { openAIProviderManager } from '../utils/ai-provider-manager';
+import { PLUS_REPO_URL } from '../utils/plus-update';
 import {
 	createAnswererWrapperSection,
 	createSteps,
@@ -207,8 +208,7 @@ export const CommonProject = Project.create({
 					defaultValue: $ui.notes([
 						'打开任意网课平台，进入视频、作业页面等待脚本运行，',
 						'⚠️ 禁止与其他脚本一起使用（不兼容），也不能开多个相同脚本',
-						'⚠️ 禁止最小化浏览器、切屏，否则可能导致脚本无法运行！',
-						'有疑问请访问下方交流群，进群后带截图进行反馈。'
+						'⚠️ 禁止最小化浏览器、切屏，否则可能导致脚本无法运行！'
 					]).outerHTML
 				}
 			},
@@ -1004,12 +1004,12 @@ export const CommonProject = Project.create({
 					label: '答题结束后暂停（秒）',
 					attrs: {
 						type: 'number',
-						min: 3,
+						min: 1,
 						step: 1,
 						max: 9999,
 						title: '自动答题脚本结束后暂停的时间（方便查看和检查）。'
 					},
-					defaultValue: 3
+					defaultValue: 1
 				},
 				period: {
 					showIf: 'common.settings.advancedSettings',
@@ -1022,7 +1022,7 @@ export const CommonProject = Project.create({
 						max: 60,
 						title: '每道题的搜题间隔时间，不建议太低，避免增加服务器压力。'
 					},
-					defaultValue: 3
+					defaultValue: 1
 				},
 				answerSeparators: {
 					showIf: 'common.settings.advancedSettings',
@@ -1822,15 +1822,8 @@ const createGuide = () => {
 	const gotoHome = h('button', { className: 'base-style-button-secondary' }, '🏡官网教程');
 	gotoHome.onclick = () => window.open('https://docs.ocsjs.com', '_blank');
 
-	const contactUs = h('button', { className: 'base-style-button-secondary' }, '🗨️交流群');
-	contactUs.onclick = () => window.open('https://docs.ocsjs.com/docs/about#交流方式', '_blank');
-
-	const changeLog = h('button', { className: 'base-style-button-secondary' }, '📄更新日志');
-	changeLog.onclick = () => BackgroundProject.scripts.update.methods.showChangelog();
-
-	const closeGuide = h('button', { className: 'base-style-button-secondary' }, '📄如何关闭脚本？');
-	closeGuide.onclick = () =>
-		window.open('https://docs.ocsjs.com/docs/script#%E5%85%B3%E9%97%AD%E8%84%9A%E6%9C%AC%E6%95%99%E7%A8%8B', '_blank');
+	const gotoRepository = h('button', { className: 'base-style-button-secondary' }, '📦项目仓库');
+	gotoRepository.onclick = () => window.open(PLUS_REPO_URL, '_blank');
 
 	return h('div', { className: 'user-guide' }, [
 		h('div', [
@@ -1854,9 +1847,15 @@ const createGuide = () => {
 		h('div', { style: { margin: '12px 0px' } }, [
 			h('div', { style: { marginBottom: '8px', fontWeight: 'bold' } }, '🌐快捷访问：'),
 			gotoHome,
-			contactUs,
-			changeLog,
-			closeGuide
+			gotoRepository,
+			h(
+				'p',
+				{
+					className: 'secondary',
+					style: { margin: '8px 0 0', fontSize: '12px', lineHeight: '1.6', maxWidth: '400px' }
+				},
+				'官网教程针对原版 OCS。当前使用的是 OCS Plus，AI 配置和新增功能请以项目仓库 README 为准。'
+			)
 		])
 	]);
 };

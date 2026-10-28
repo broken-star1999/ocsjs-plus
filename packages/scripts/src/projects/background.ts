@@ -607,7 +607,7 @@ export const BackgroundProject = Project.create({
 			configs: {
 				notes: { defaultValue: '仅检查 OCS Plus 仓库的正式发布版本；确认后前往安装，不会自动替换脚本。' },
 				autoNotify: {
-					defaultValue: false,
+					defaultValue: true,
 					label: '开启更新通知',
 					attrs: { type: 'checkbox', title: '检查 OCS Plus 正式发布版本，发现新版本时通知。' }
 				},
