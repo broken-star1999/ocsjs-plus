@@ -2,6 +2,7 @@ import { OCSWorker } from './worker';
 import { createDefaultQuestionResolver } from './question.resolver';
 import { domSearchAll } from '../utils/dom';
 import { QuestionTypes, RawElements, WorkContext, WorkResult } from './interface';
+import { needsAIReview, requireAIReview } from '../answer-wrapper/ai-ensemble';
 
 // 同一 DOM 被一个新任务接管后，即使旧 worker 没有收到 close，也不能再写回旧结果。
 const owners = new WeakMap<HTMLElement, object>();
@@ -106,6 +107,7 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 				result.requested = false;
 				result.resolved = false;
 				result.result = undefined;
+				result.confirmReview = undefined;
 				result.error = undefined;
 				result.ctx = ctx;
 				try {
@@ -124,6 +126,44 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 						}
 					);
 					if (!resolved.finish || !plan.length) {
+						if (ctx.searchInfos.some((info) => info.ensemble)) {
+							if (!needsAIReview(ctx.searchInfos))
+								requireAIReview(ctx.searchInfos, '模型答案一致，但无法匹配页面，等待人工评判。');
+							let confirmed = false;
+							result.confirmReview = async () => {
+								assertCurrent();
+								if (result.ctx !== ctx || result.retrying || busy || confirmed)
+									throw new Error('本次人工确认已失效或仍在处理。');
+								const previous = { result: result.result, error: result.error };
+								const infos = ctx.searchInfos
+									.filter((info) => info.ensemble)
+									.map((info) => ({ info, reason: info.ensemble!.reason, error: info.error }));
+								for (const info of ctx.searchInfos)
+									if (info.ensemble) {
+										info.ensemble.status = 'confirmed';
+										info.ensemble.reason = '用户已在原题人工处理并确认。';
+										info.error = undefined;
+									}
+								confirmed = true;
+								result.result = { finish: true, manual: true };
+								result.error = undefined;
+								busy = true;
+								try {
+									await originalUpdate?.(result, questionIndex, results);
+								} catch (error) {
+									confirmed = false;
+									Object.assign(result, previous);
+									for (const entry of infos) {
+										entry.info.ensemble!.status = 'review';
+										entry.info.ensemble!.reason = entry.reason;
+										entry.info.error = entry.error;
+									}
+									throw error;
+								} finally {
+									busy = false;
+								}
+							};
+						}
 						throw new Error(
 							ctx.searchInfos
 								.map((info) => info.error)

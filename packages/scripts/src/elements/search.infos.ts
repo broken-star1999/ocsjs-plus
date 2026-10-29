@@ -4,36 +4,8 @@ import { createQuestionTitleExtra } from '../utils';
 import { createAccordionCard } from '../utils/ui';
 import DOMPurify from 'dompurify';
 import { createAICallDetails } from './ai-call-details';
-
-/**
- * 图片链接正则
- * 含 query string 与 fragment，避免 URL 被截断（如带 ?response-content-disposition=... 的鉴权链接）
- * 排除空白/引号/</CJK，避免跨越标签或吞掉相邻中文
- */
-const IMG_LINK_RE =
-	/https?:\/\/[^"'<\s一-鿿]+?\.(?:png|jpe?g|gif|bmp|webp|svg)(?:\?[^\s"'<>一-鿿]*)?(?:#[^\s"'<>一-鿿]*)?/g;
-
-/**
- * 判断是否有图片链接，如果有则使用 <img> 标签包裹，但如果已经被 <img> 包裹则不处理
- */
-const transformImgLinkOfQuestion = (question: string) => {
-	const toImg = (text: string) => text.replace(IMG_LINK_RE, (img) => `<img src="${img}" />`);
-
-	// 纯文本（无 img 标签）直接替换链接：
-	// 走 DOM 序列化会把 & 转义成 &amp;（其中的分号会被答案分隔符 ';' 误切碎 img 标签），
-	// 且会额外引入 <head>/<body> 包裹标签
-	if (!/<img[\s>]/i.test(question)) {
-		return toImg(question);
-	}
-
-	// 防止题目中包含 img 标签元素，所以先统一把 img 标签替换成链接
-	const dom = new DOMParser().parseFromString(question, 'text/html');
-	for (const img of Array.from(dom.querySelectorAll('img'))) {
-		img.replaceWith(img.src);
-	}
-	// 最后将所有图片链接替换成 img 标签
-	return toImg(dom.documentElement.innerHTML);
-};
+import { createAIEnsembleDetails } from './ai-ensemble-details';
+import { transformImgLinkOfQuestion } from '../utils/search-result-images';
 
 /**
  * 移除特殊字符、空格、换行，用于判断题库返回的题目是否和原题完全匹配
@@ -91,12 +63,15 @@ export class SearchInfosElement extends HTMLElement {
 		this.append(
 			...this.infos.map((info) => {
 				// 题库主页链接：点击跳转，不触发卡片展开/收起
-				const homeLink = $ui.tooltip(
-					h('a', { href: info.homepage, innerText: info.name, target: '_blank', title: '点击前往题库官网' })
-				);
+				const homeLink = info.homepage
+					? $ui.tooltip(
+							h('a', { href: info.homepage, innerText: info.name, target: '_blank', title: '点击前往题库官网' })
+					  )
+					: h('span', { innerText: info.name });
 				homeLink.onclick = (e) => e.stopPropagation();
 
-				const isAI = !!info.ai || info.results.some((ans) => (ans[2] as { ai_native?: boolean })?.ai_native);
+				const isAI =
+					!!info.ai || !!info.ensemble || info.results.some((ans) => (ans[2] as { ai_native?: boolean })?.ai_native);
 				const results = (
 					info.error
 						? /** 显示错误信息 */
@@ -167,7 +142,9 @@ export class SearchInfosElement extends HTMLElement {
 						homeLink,
 						...(info.error ? [] : [h('span', { className: 'text-secondary' }, ` 共 ${info.results.length} 个结果`)])
 					],
-					alwaysVisibleBody: isAI ? results : undefined,
+					alwaysVisibleBody: isAI
+						? [...results, ...(info.ensemble ? [createAIEnsembleDetails(info.ensemble)] : [])]
+						: undefined,
 					body: isAI ? (info.ai ? [createAICallDetails(info.ai)] : []) : results
 				});
 			})

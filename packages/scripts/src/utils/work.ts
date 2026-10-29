@@ -13,7 +13,7 @@ import { CommonEvents, CommonProject } from '../projects/common';
 import { $console, BackgroundProject } from '../projects/background';
 import { CommonWorkOptions } from '.';
 import { createIframeControlSession } from './iframe-control-bar';
-import { registerQuestionRetry } from './question-retry-control';
+import { registerQuestionRetry, registerManualReview } from './question-retry-control';
 import {
 	buildAnswererEnv,
 	createAnswererWrappersSignature,
@@ -426,6 +426,7 @@ export function simplifyWorkResult(
 			.join('<br>') ||
 		'';
 	return {
+		reviewControl: wr.confirmReview ? registerManualReview(wr, wr.confirmReview) : undefined,
 		retry: registerQuestionRetry(wr),
 		retrying: wr.retrying,
 		requested: wr.requested,
@@ -437,6 +438,7 @@ export function simplifyWorkResult(
 		finish: wr.result?.finish,
 		searchInfos:
 			wr.ctx?.searchInfos.map((sr) => ({
+				ensemble: sr.ensemble,
 				ai: sr.ai,
 				error: sr.error,
 				name: sr.name,
@@ -520,6 +522,20 @@ export function createCommonAnswerer(options: {
 	let imageConvertFailWarned = false;
 
 	return async (elements: any, ctx: WorkContext<any>): Promise<SearchInformation[]> => {
+		const ensembles = options.answererWrappers.flatMap((wrapper) => (wrapper.aiEnsemble ? [wrapper.aiEnsemble] : []));
+		if (ensembles.length) {
+			const timeout = (config: { timeoutSeconds?: number }) =>
+				Math.min(180_000, Math.max(1000, (config.timeoutSeconds ?? 60) * 1000));
+			const budget = Math.max(
+				...ensembles.map(
+					(config) =>
+						Math.max(0, ...config.models.map(timeout)) +
+						(config.rule?.includes('summary') && config.summary ? timeout(config.summary) : 0)
+				)
+			);
+			// 图片准备、搜题间隔和顺序总结都必须在解析器的等待窗口内。
+			ctx.searchDeadline = Date.now() + budget + 60_000 + (options.period ?? 1) * 1000;
+		}
 		const titleResult = normalize(options.titleTransform(elements, ctx));
 		const title = titleResult.text;
 		if (!title) {
@@ -593,7 +609,7 @@ export function createCommonAnswerer(options: {
 		};
 		// Upstream cache keys only contain the title; AI also depends on options/model/images.
 		// Bypass that cache to prevent an old answer or another course's options being reused.
-		return ctx.forceSearch || options.answererWrappers.some((wrapper) => wrapper.ai)
+		return ctx.forceSearch || options.answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble)
 			? search()
 			: BackgroundProject.scripts.data.methods.searchAnswerInCaches(title, search);
 	};

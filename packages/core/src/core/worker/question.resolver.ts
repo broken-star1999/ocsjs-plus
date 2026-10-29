@@ -1,6 +1,7 @@
 import { QuestionResolver, WorkContext } from './interface';
 import { resolveSingle, resolveMultiple, resolveJudgement, resolveCompletion, isJudgementOptions } from './resolvers';
 import type { SearchInformation } from '../answer-wrapper';
+import { needsAIReview } from '../answer-wrapper/ai-ensemble';
 
 /** Native AI answers keep their array boundaries; punctuation in code/formulas is never a separator. */
 function nativeAIAnswers(infos: SearchInformation[]): string[] | undefined {
@@ -27,6 +28,9 @@ export function createDefaultQuestionResolver<E>(
 	optionText?: (el: HTMLElement, i: number) => string
 ): Record<'single' | 'multiple' | 'completion' | 'judgement', QuestionResolver<E>> {
 	const toText = (o: HTMLElement, i: number) => (optionText ? optionText(o, i) : o.innerText);
+	const assertActive = () => {
+		if (ctx.isClosed?.()) throw new Error('原答题任务已关闭，已停止填写。');
+	};
 	return {
 		/**
 		 * 单选题处理器
@@ -34,6 +38,7 @@ export function createDefaultQuestionResolver<E>(
 		 * 委托给 resolveSingle 纯函数，将 DOM 元素适配为字符串
 		 */
 		async single(infos, options, handler) {
+			if (needsAIReview(infos)) return { finish: false };
 			const optionTexts = options.map((o, i) => toText(o, i));
 			// 选项具备判断题性质时，直接走判断题处理逻辑
 			if (isJudgementOptions(optionTexts.map((o) => o.trim()))) {
@@ -42,6 +47,7 @@ export function createDefaultQuestionResolver<E>(
 				if (result.finish && result.option !== undefined) {
 					const index = optionTexts.indexOf(result.option);
 					const opt = index !== -1 ? options[index] : options[0];
+					assertActive();
 					await handler('judgement', result.option, opt, ctx);
 				}
 				return result;
@@ -55,6 +61,7 @@ export function createDefaultQuestionResolver<E>(
 			if (result.finish && result.option !== undefined) {
 				const index = result.optionIndex ?? optionTexts.indexOf(result.option);
 				const opt = index !== -1 ? options[index] : options[0];
+				assertActive();
 				await handler('single', result.option, opt, ctx);
 			}
 
@@ -66,6 +73,7 @@ export function createDefaultQuestionResolver<E>(
 		 * 委托给 resolveMultiple 纯函数，将 DOM 元素适配为字符串
 		 */
 		async multiple(infos, options, handler) {
+			if (needsAIReview(infos)) return { finish: false };
 			const ai = nativeAIAnswers(infos);
 			const resultAnswers =
 				ai === undefined ? infos.map((info) => info.results.map((res) => res.answer)).flat() : [ai.join('')];
@@ -81,6 +89,7 @@ export function createDefaultQuestionResolver<E>(
 					const optText = resolvedOptions[i];
 					const index = result.plainOptionIndices?.[i] ?? optionTexts.indexOf(optText);
 					const opt = index !== -1 ? options[index] : options[0];
+					assertActive();
 					await handler('multiple', optText, opt, ctx);
 				}
 			}
@@ -93,6 +102,7 @@ export function createDefaultQuestionResolver<E>(
 		 * 委托给 resolveJudgement 纯函数
 		 */
 		async judgement(infos, options, handler) {
+			if (needsAIReview(infos)) return { finish: false };
 			const answerGroups = infos.map((info) => info.results.map((res) => res.answer));
 			const optionTexts = options.map((o, i) => toText(o, i));
 
@@ -101,6 +111,7 @@ export function createDefaultQuestionResolver<E>(
 			if (result.finish && result.option !== undefined) {
 				const index = optionTexts.indexOf(result.option);
 				const opt = index !== -1 ? options[index] : options[0];
+				assertActive();
 				await handler('judgement', result.option, opt, ctx);
 			}
 
@@ -112,10 +123,14 @@ export function createDefaultQuestionResolver<E>(
 		 * 委托给 resolveCompletion 纯函数
 		 */
 		async completion(infos, options, handler) {
+			if (needsAIReview(infos)) return { finish: false };
 			const ai = nativeAIAnswers(infos);
 			if (ai !== undefined) {
 				if (ai.length !== options.length || ai.some((answer) => !answer.trim())) return { finish: false };
-				for (let i = 0; i < ai.length; i++) await handler('completion', ai[i], options[i], ctx);
+				for (let i = 0; i < ai.length; i++) {
+					assertActive();
+					await handler('completion', ai[i], options[i], ctx);
+				}
 				return { finish: true, answers: ai };
 			}
 			const answerGroups = infos.map((info) => info.results.map((res) => res.answer));
@@ -124,6 +139,7 @@ export function createDefaultQuestionResolver<E>(
 
 			if (result.finish && result.answers) {
 				for (let i = 0; i < result.answers.length; i++) {
+					assertActive();
 					await handler('completion', result.answers[i], options[i], ctx);
 				}
 			}

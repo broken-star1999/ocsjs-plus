@@ -39,6 +39,10 @@ export interface WorkContext<E> {
 	answerSeparators?: string[];
 	/** 单题重做时绕过答案缓存，重新查询；不改变原任务配置。 */
 	forceSearch?: boolean;
+	/** 查题器可延长等待截止时间，例如基础模型回答后再顺序调用总结模型。 */
+	searchDeadline?: number;
+	/** Local cancellation guard for platform resolvers; omitted from stored result summaries. */
+	isClosed?: () => boolean;
 }
 
 /** 答案题目处理器结果 */
@@ -49,6 +53,7 @@ export interface ResolverResult {
 
 /** 答题结果 */
 export interface WorkResult<E extends RawElements> {
+	confirmReview?: () => Promise<void>;
 	/** 仅在当前页面内有效，不可直接序列化。由已适配的平台提供。 */
 	retry?: () => Promise<void>;
 	retrying?: boolean;
@@ -69,6 +74,9 @@ export interface WorkResult<E extends RawElements> {
  * 为什么不直接用 {@link WorkResult} ，因为对象里太多嵌套对象，一旦结果超过10个以上，可能导致 I/O 变慢，并且页面卡顿。
  */
 export interface SimplifyWorkResult {
+	/** Local callback, removed by the scripts layer before storing results. */
+	_confirmReview?: () => Promise<void>;
+	reviewControl?: { id: string; frame: string };
 	/** 单题重做的页面会话地址，不包含 DOM、密钥或函数。 */
 	retry?: { id: string; frame: string };
 	retrying?: boolean;
@@ -88,6 +96,7 @@ export interface SimplifyWorkResult {
 	resolved: boolean;
 	/** 查题信息 */
 	searchInfos: {
+		ensemble?: SearchInformation['ensemble'];
 		ai?: SearchInformation['ai'];
 		/** 题目名 */
 		name: SearchInformation['name'];

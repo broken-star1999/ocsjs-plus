@@ -1,6 +1,7 @@
 import { AnswererWrapper, SearchInformation, Result } from './interface';
 import { request } from '../utils/request';
 import { searchAIAnswer } from './ai';
+import { searchAIEnsemble } from './ai-ensemble';
 import { $ } from '../../utils';
 
 export const AnswerWrapperHandlerConfig = {
@@ -84,6 +85,16 @@ export async function defaultAnswerWrapperHandler(
 	// 多线程请求
 	await Promise.all(
 		temp.map(async (wrapper) => {
+			if (wrapper.aiEnsemble) {
+				searchInfos.push(
+					await searchAIEnsemble(
+						wrapper.aiEnsemble,
+						{ ...env, title: env.title || '' },
+						AnswerWrapperHandlerConfig.timeout_seconds * 1000
+					)
+				);
+				return;
+			}
 			if (wrapper.ai) {
 				searchInfos.push(
 					await searchAIAnswer(

@@ -30,11 +30,22 @@ window.unsafeWindow=window;
 window.GM_info={script:{name:'OCS Plus 网课助手',version:'${
 	require('../package.json').version
 }',namespace:'ocsjs-plus'},scriptHandler:'UI fixture'};
-if(location.search.includes('search=1')||location.search.includes('results=1')){
+if(location.search.includes('search=1')||location.search.includes('results=1')||location.search.includes('ensemble=1')){
  values.set('common.settings.aiProvidersMigrated',true);
  values.set('common.settings.imageOptimize',true);
  values.set('common.settings.aiProviders',[{id:'fixture',name:'DeepSeek（本地模拟）',preset:'deepseek',endpoint:'https://api.deepseek.com',timeoutSeconds:120,catalog:[],models:[{id:'fixture-vision',name:'模拟识图模型',enabled:true,vision:true,extraBody:{}}]}]);
  values.set('common.settings.aiSelectedModel',JSON.stringify(['fixture','fixture-vision']));
+}
+if(location.search.includes('ensemble=1')){
+ const sources=values.get('common.settings.aiProviders');sources[0].models.push(
+ {id:'fixture-second',name:'第二模拟模型',enabled:true,vision:true,extraBody:{}},
+ {id:'fixture-summary',name:'模拟总结模型',enabled:true,vision:true,extraBody:{}});
+ values.set('common.settings.aiAnswerMode','advanced');
+ values.set('common.settings.aiModelThreads',[{key:JSON.stringify(['fixture','fixture-vision']),threads:3},{key:JSON.stringify(['fixture','fixture-second']),threads:1}]);
+ values.set('common.settings.aiConfidenceEnabled',true);values.set('common.settings.aiConsensusThreshold',75);
+ values.set('common.settings.aiDecisionRule','confidence');values.set('common.settings.aiSummaryModel',JSON.stringify(['fixture','fixture-summary']));
+ if(location.search.includes('review=1'))values.set('common.settings.aiConsensusThreshold',100);
+ if(location.search.includes('summary=1')){values.set('common.settings.aiConsensusThreshold',100);values.set('common.settings.aiSummaryEnabled',true);values.set('common.settings.aiDecisionRule','confidence-then-summary')}
 }
 const copy=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
 window.GM_getValue=(k,d)=>copy(values.has(k)?values.get(k):d);
@@ -111,7 +122,12 @@ window.GM_xmlhttpRequest=opts=>{
    if(payload.question.startsWith('单题重做模拟')){
     const count=retryCalls.get(payload.question)||0;retryCalls.set(payload.question,count+1);
     answer=payload.question.includes('多选')?(count?['BD']:['AC']):payload.question.includes('判断')?(count?['错误']:['正确']):payload.question.includes('填空')?(count?['新甲','新乙']:['旧甲','旧乙']):(count?['D']:['A']);
+    if(location.search.includes('ensemble=1')){
+     const second=request.model==='fixture-second',summary=request.model==='fixture-summary';
+     answer=payload.question.includes('多选')?(summary?['AD']:second?['BD']:['AC']):payload.question.includes('判断')?(second||summary?['错误']:['正确']):payload.question.includes('填空')?['旧甲','旧乙']:(summary?['B']:second?['D']:['A']);
+    }
    }
+   if(payload.model_reports)record.textContent+=' · 汇总 '+payload.model_reports.length+' 次回答及思考';
    opts.onload({status:200,responseText:JSON.stringify({usage:{prompt_tokens:128,completion_tokens:32,total_tokens:160},choices:[{finish_reason:'stop',message:{
     ...(!payload.question.includes('无思考字段')?{reasoning_content:new URLSearchParams(location.search).has('layout')
       ?('这是本地长文本布局验证，不代表真实模型输出。'+('long_formula_without_spaces_'.repeat(12))+'\\n').repeat(30)
@@ -170,42 +186,45 @@ document.querySelector('#retry-example').onclick=async()=>{
   onResultsUpdate:async(result,index)=>results.methods.update(index,OCS.simplifyWorkResult(result))
  });
  OCS.enableSingleQuestionRetry(worker,OCS.createCXQuestionRetryAdapter({layout:'exam',type:ctx=>ctx.root.dataset.type,optionText:el=>el.textContent}));
+ worker.on('start',()=>OCS.CommonEvents.emitWorkerStateChange('start'));worker.on('done',()=>OCS.CommonEvents.emitWorkerStateChange('done'));worker.on('close',()=>OCS.CommonEvents.emitWorkerStateChange('close'));
  try{await worker.doWork();worker.emit('done')}finally{button.disabled=false}
 };
 </script><link rel="stylesheet" href="/dist/style.css"></html>`;
-http
-	.createServer((req, res) => {
-		if (new URL(req.url, 'http://127.0.0.1').pathname === '/question.svg') {
-			res.setHeader('Content-Type', 'image/svg+xml');
-			res.end(
-				'<svg xmlns="http://www.w3.org/2000/svg" width="140" height="70"><rect width="140" height="70" fill="white"/><circle cx="40" cy="35" r="20" fill="#4263eb"/><circle cx="100" cy="35" r="20" fill="#14b8a6"/></svg>'
-			);
-			return;
-		}
-		if (new URL(req.url, 'http://127.0.0.1').pathname === '/') {
-			res.setHeader('Content-Type', 'text/html; charset=utf-8');
-			res.end(html);
-			return;
-		}
-		const files = {
-			'/dist/ocs.user.js': ['dist/ocs.user.js', 'application/javascript'],
-			'/dist/index.js': ['dist/index.js', 'application/javascript'],
-			'/dist/style.css': ['dist/style.css', 'text/css']
-		};
-		const file = files[req.url];
-		if (!file) {
-			res.writeHead(404);
-			res.end();
-			return;
-		}
-		res.setHeader('Content-Type', file[1] + '; charset=utf-8');
-		fs.createReadStream(path.join(root, file[0]))
-			.on('error', () => {
-				res.statusCode = 404;
-				res.end('Run npm run build first');
-			})
-			.pipe(res);
-	})
-	.listen(Number(process.env.PORT || 4179), '127.0.0.1', () =>
-		console.log('AI settings fixture: http://127.0.0.1:' + (process.env.PORT || 4179) + ' (simulated responses only)')
-	);
+module.exports = html;
+if (require.main === module)
+	http
+		.createServer((req, res) => {
+			if (new URL(req.url, 'http://127.0.0.1').pathname === '/question.svg') {
+				res.setHeader('Content-Type', 'image/svg+xml');
+				res.end(
+					'<svg xmlns="http://www.w3.org/2000/svg" width="140" height="70"><rect width="140" height="70" fill="white"/><circle cx="40" cy="35" r="20" fill="#4263eb"/><circle cx="100" cy="35" r="20" fill="#14b8a6"/></svg>'
+				);
+				return;
+			}
+			if (new URL(req.url, 'http://127.0.0.1').pathname === '/') {
+				res.setHeader('Content-Type', 'text/html; charset=utf-8');
+				res.end(html);
+				return;
+			}
+			const files = {
+				'/dist/ocs.user.js': ['dist/ocs.user.js', 'application/javascript'],
+				'/dist/index.js': ['dist/index.js', 'application/javascript'],
+				'/dist/style.css': ['dist/style.css', 'text/css']
+			};
+			const file = files[req.url];
+			if (!file) {
+				res.writeHead(404);
+				res.end();
+				return;
+			}
+			res.setHeader('Content-Type', file[1] + '; charset=utf-8');
+			fs.createReadStream(path.join(root, file[0]))
+				.on('error', () => {
+					res.statusCode = 404;
+					res.end('Run npm run build first');
+				})
+				.pipe(res);
+		})
+		.listen(Number(process.env.PORT || 4179), '127.0.0.1', () =>
+			console.log('AI settings fixture: http://127.0.0.1:' + (process.env.PORT || 4179) + ' (simulated responses only)')
+		);

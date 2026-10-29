@@ -7,6 +7,7 @@ export interface Result {
 
 /** 题库查询信息 */
 export interface SearchInformation {
+	ensemble?: import('./ai-ensemble').AIEnsembleResult;
 	/** Native AI call metadata and optional provider-returned reasoning. */
 	ai?: import('./ai-call-log').AICallDetails;
 	results: Result[];
@@ -27,6 +28,8 @@ export interface SearchInformation {
  * 题库配置器
  */
 export interface AnswererWrapper {
+	/** Selected independent models; credentials stay in provider-scoped storage. */
+	aiEnsemble?: import('./ai-ensemble').AIEnsembleConfig;
 	/** Native AI adapter configuration. API keys are never stored in wrappers. */
 	ai?: import('./ai').AIAnswererConfig;
 	/** 答题器请求路径 */

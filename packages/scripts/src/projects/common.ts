@@ -9,7 +9,9 @@ import {
 	getAIKeyStorage,
 	aiModelKey,
 	migrateAIProviders,
-	resolveAISelection,
+	createAIAnswererWrappers,
+	AIModelThreads,
+	AIEnsembleRule,
 	AIProviderSource,
 	AIModel,
 	AnswererWrapper,
@@ -36,7 +38,13 @@ import { initEdgeMinimize } from '../utils/edge-minimize';
 import { openAIProviderManager } from '../utils/ai-provider-manager';
 import { PLUS_REPO_URL } from '../utils/plus-update';
 import { openAICallLog } from '../utils/ai-call-log-panel';
-import { createQuestionRetryControl } from '../utils/question-retry-control';
+import {
+	createQuestionRetryControl,
+	createManualReviewControl,
+	serializeManualReview
+} from '../utils/question-retry-control';
+import { createAIConsensusSettingsButton } from '../utils/ai-consensus-settings';
+import { isAIQuestionCacheSource } from '../utils/question-cache';
 import { readSearchSelection, expandSearchImages, SearchSelection } from '../utils/online-search-selection';
 import {
 	createAnswererWrapperSection,
@@ -110,7 +118,7 @@ const count = (results: SimplifyWorkResult[]) => ({
  * 接入全局设置的题库缓存开关（与 searchAnswerInCaches 读取侧语义一致：仅显式关闭时跳过）。
  */
 const cacheIfFinished = (result: SimplifyWorkResult) => {
-	if (CommonProject.scripts.settings.cfg.aiEnabled) return;
+	if (CommonProject.scripts.settings.cfg.aiEnabled || result.searchInfos.some(isAIQuestionCacheSource)) return;
 	if (CommonProject.scripts.settings.cfg.enableQuestionCaches === false) {
 		return;
 	}
@@ -253,6 +261,66 @@ export const CommonProject = Project.create({
 				aiVision: { defaultValue: false },
 				aiProviders: { defaultValue: [] as AIProviderSource[] },
 				aiProvidersMigrated: { defaultValue: false },
+				aiModelThreads: { defaultValue: [] as AIModelThreads[] },
+				aiConsensusThreshold: { defaultValue: 100 },
+				aiConfidenceEnabled: { defaultValue: false },
+				aiDecisionRule: { defaultValue: 'manual' as AIEnsembleRule },
+				aiSummaryEnabled: { defaultValue: false },
+				aiSummaryModel: { defaultValue: '' },
+				aiAnswerMode: {
+					onload() {
+						if (this.parentElement)
+							Object.assign(this.parentElement.style, {
+								flexWrap: 'wrap',
+								gap: '8px',
+								minWidth: '0'
+							});
+					},
+					label: 'AI 作答模式',
+					tag: 'select',
+					enableForAttribute: true,
+					defaultValue: 'basic' as 'basic' | 'advanced',
+					options: [
+						['basic', '普通模式'],
+						['advanced', '高级模式']
+					],
+					suffixSlot: (): HTMLElement => {
+						const settings = CommonProject.scripts.settings;
+						return createAIConsensusSettingsButton({
+							read: () => ({
+								mode: settings.cfg.aiAnswerMode,
+								assignments: settings.cfg.aiModelThreads,
+								threshold: settings.cfg.aiConsensusThreshold,
+								confidenceEnabled: settings.cfg.aiConfidenceEnabled,
+								rule: settings.cfg.aiDecisionRule,
+								summaryEnabled: settings.cfg.aiSummaryEnabled,
+								summaryKey: settings.cfg.aiSummaryModel,
+								sources: settings.cfg.aiProviders
+							}),
+							write: (patch) => {
+								if (patch.assignments) settings.cfg.aiModelThreads = patch.assignments;
+								if (patch.threshold !== undefined) settings.cfg.aiConsensusThreshold = patch.threshold;
+								if (patch.confidenceEnabled !== undefined) settings.cfg.aiConfidenceEnabled = patch.confidenceEnabled;
+								if (patch.rule !== undefined) settings.cfg.aiDecisionRule = patch.rule;
+								if (patch.summaryEnabled !== undefined) settings.cfg.aiSummaryEnabled = patch.summaryEnabled;
+								if (patch.summaryKey !== undefined) settings.cfg.aiSummaryModel = patch.summaryKey;
+							},
+							observe: (update) => {
+								const ids = [
+									settings.onConfigChange('aiAnswerMode', update),
+									settings.onConfigChange('aiModelThreads', update),
+									settings.onConfigChange('aiProviders', update),
+									settings.onConfigChange('aiConsensusThreshold', update),
+									settings.onConfigChange('aiConfidenceEnabled', update),
+									settings.onConfigChange('aiDecisionRule', update),
+									settings.onConfigChange('aiSummaryEnabled', update),
+									settings.onConfigChange('aiSummaryModel', update)
+								];
+								return () => ids.forEach((id) => settings.offConfigChange(id));
+							}
+						});
+					}
+				},
 				aiProviderManager: {
 					label: '模型提供商',
 					defaultValue: '管理提供商与模型',
@@ -281,6 +349,7 @@ export const CommonProject = Project.create({
 				},
 				aiSelectedModel: {
 					label: '答题模型',
+					showIf: ['common.settings.aiAnswerMode', (mode) => mode !== 'advanced'],
 					tag: 'select',
 					defaultValue: '',
 					enableForAttribute: true,
@@ -1156,23 +1225,21 @@ export const CommonProject = Project.create({
 						// 使用 json 深拷贝，防止修改原始配置
 						const workOptions: typeof this.cfg = JSON.parse(JSON.stringify(this.cfg));
 						if (workOptions.aiEnabled) {
-							const ai = resolveAISelection({
-								sources: workOptions.aiProviders,
-								selection: workOptions.aiSelectedModel
-							});
-							workOptions.answererWrappers = ai
-								? [
-										{
-											name: 'AI · ' + ai.model,
-											url: ai.endpoint,
-											method: 'post',
-											type: 'GM_xmlhttpRequest',
-											headers: {},
-											handler: '',
-											ai
-										}
-								  ]
-								: [];
+							workOptions.answererWrappers = createAIAnswererWrappers(
+								{
+									sources: workOptions.aiProviders,
+									selection: workOptions.aiSelectedModel
+								},
+								workOptions.aiAnswerMode === 'advanced',
+								workOptions.aiModelThreads,
+								{
+									threshold: workOptions.aiConsensusThreshold,
+									confidenceEnabled: workOptions.aiConfidenceEnabled,
+									rule: workOptions.aiDecisionRule,
+									summaryEnabled: workOptions.aiSummaryEnabled,
+									summarySelection: workOptions.aiSummaryModel
+								}
+							);
 							return workOptions;
 						}
 						/**
@@ -1319,6 +1386,7 @@ export const CommonProject = Project.create({
 					 * 数组长度不足时以空占位结果补齐中间空位（多线程答题结果可能乱序到达）。
 					 */
 					update: async (index: number, result: SimplifyWorkResult): Promise<void> => {
+						result = serializeManualReview(result);
 						const data = (await $store.getTab(TAB_WORK_RESULTS_KEY)) || [];
 						const placeholder = {
 							question: '',
@@ -1350,6 +1418,7 @@ export const CommonProject = Project.create({
 						await $store.setTab(TAB_WORK_RESULTS_KEY, results);
 					},
 					append: async (result: SimplifyWorkResult): Promise<void> => {
+						result = serializeManualReview(result);
 						CommonProject.scripts.workResults.cfg.dynamicResults = true;
 						const data = (await $store.getTab(TAB_WORK_RESULTS_KEY)) || [];
 						// 空题目文本不参与匹配（防止多个空标题占位互相覆盖）
@@ -1563,7 +1632,8 @@ export const CommonProject = Project.create({
 										question: result.question,
 										type: result.type
 									}),
-									createQuestionRetryControl(result, state.workResult.isWorkerWorking || questionRetryBusy)
+									createQuestionRetryControl(result, state.workResult.isWorkerWorking || questionRetryBusy),
+									createManualReviewControl(result)
 								]);
 							} else {
 								return h('div', 'undefined');
@@ -1595,10 +1665,23 @@ export const CommonProject = Project.create({
 						working_msg = undefined;
 					}
 				});
-				CommonProject.scripts.workResults.on('work-current-result-change', (cur) => {
+				CommonProject.scripts.workResults.on('work-current-result-change', async (cur) => {
 					if (cur.searching) {
 						if (working_msg)
 							working_msg.innerHTML = loadingSpinSvg + ` 正在搜题 ${formatQuestionForMessage(cur.question)}`;
+					} else if (cur.resolved && cur.searchInfos.some((info) => info.ensemble)) {
+						const results = await CommonProject.scripts.workResults.methods.getResults();
+						const pending =
+							results?.filter((result) => result.searchInfos.some((info) => info.ensemble?.status === 'review'))
+								.length || 0;
+						if (
+							working_msg &&
+							state.workResult.isWorkerWorking &&
+							pending &&
+							results?.every((result) => result.resolved)
+						) {
+							working_msg.textContent = `等待人工评判（${pending} 题）：请在原题处理后逐题确认。`;
+						}
 					}
 				});
 			}
@@ -1756,6 +1839,7 @@ export const CommonProject = Project.create({
 											homepage: info.homepage,
 											name: info.name,
 											ai: info.ai,
+											ensemble: info.ensemble,
 											error: info.error
 										})),
 										question: value

@@ -14,6 +14,8 @@ import {
 import { createDefaultQuestionResolver } from './question.resolver';
 import { defaultWorkTypeResolver } from './utils';
 import { AnswerWrapperHandlerConfig } from '../answer-wrapper';
+import { needsAIReview, requireAIReview } from '../answer-wrapper/ai-ensemble';
+import { AIReviewQueue } from './ai-review-queue';
 
 /**
  * 自动答题器， 传入一些指定的配置， 就可以进行自动答题。
@@ -103,6 +105,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 
 		this.once('close', () => {
 			this.isClose = true;
+			this.isRunning = false;
 			this.stopRootObserver();
 		});
 
@@ -141,6 +144,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 			// 初始化上下文
 			const ctx: WorkContext<E> = {
 				searchInfos: [],
+				isClosed: () => this.isClose,
 				root: questionRoot,
 				elements: domSearchAll<E>(this.opts.elements, questionRoot),
 				type: undefined,
@@ -185,6 +189,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 		if (results.length > 0) {
 			await this.opts.onResultsInit?.(results[0], 0, results);
 		}
+		const reviews = new AIReviewQueue(this);
 
 		/** 请求答案的线程 */
 		const requestThread = async (index: number) => {
@@ -201,12 +206,14 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 			try {
 				/** 检查是否暂停中 */
 				if (this.isStop) {
-					await waitForContinuate(() => this.isStop);
+					await waitForContinuate(() => this.isStop && !this.isClose);
 				}
+				if (this.isClose) return;
 
 				/** 标记正在搜题并回调（供结果面板为该序号显示转圈等待动画） */
 				result.searching = true;
 				await this.opts.onResultsUpdate?.(result, index, results);
+				if (this.isClose) return;
 
 				/** 查找答案 */
 				ctx.searchInfos = [];
@@ -238,6 +245,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 				error = String(err);
 			}
 
+			if (this.isClose) return;
 			result.ctx = ctx;
 			result.searching = false;
 			result.requested = true;
@@ -252,18 +260,16 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 
 		const waitForRequested = async (result: WorkResult<E>) => {
 			return new Promise<void>((resolve, reject) => {
+				const deadline = Date.now() + (AnswerWrapperHandlerConfig.timeout_seconds + 10) * 1000;
 				const interval = setInterval(() => {
 					if (result?.requested === true) {
 						clearInterval(interval);
-						clearTimeout(timeout);
 						resolve();
+					} else if (this.isClose || Date.now() >= Math.max(deadline, result.ctx?.searchDeadline || 0)) {
+						clearInterval(interval);
+						reject(new Error('答题超时或任务已关闭！'));
 					}
 				}, 200);
-
-				const timeout = setTimeout(() => {
-					clearInterval(interval);
-					reject(new Error('答题超时！'));
-				}, (AnswerWrapperHandlerConfig.timeout_seconds + 10) * 1000);
 			});
 		};
 
@@ -283,16 +289,20 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 				try {
 					/** 检查是否暂停中 */
 					if (this.isStop) {
-						await waitForContinuate(() => this.isStop);
+						await waitForContinuate(() => this.isStop && !this.isClose);
 					}
+					if (this.isClose) return;
 					/** 等待搜题完毕 */
 					await waitForRequested(result);
 				} catch (err) {
 					// 超时错误
 				}
+				if (this.isClose) return;
 
 				try {
-					if (result.ctx && result.ctx.searchInfos.length !== 0) {
+					if (result.ctx && needsAIReview(result.ctx.searchInfos)) {
+						error = '等待人工评判：请在原题处理后点击“我已人工处理本题”。';
+					} else if (result.ctx && result.ctx.searchInfos.length !== 0) {
 						/** 开始处理 */
 						if (typeof this.opts.work === 'object') {
 							if (result.ctx.elements.options) {
@@ -323,6 +333,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 				} catch (err) {
 					error = (err as any)?.message || err;
 				}
+				if (this.isClose) return;
 
 				result.error = error;
 
@@ -330,6 +341,28 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 				result.result = res || { finish: false };
 				/** 设置答题完成 */
 				result.resolved = true;
+				if (result.ctx?.searchInfos.some((info) => info.ensemble) && !res?.finish) {
+					if (!needsAIReview(result.ctx.searchInfos)) {
+						requireAIReview(result.ctx.searchInfos, '模型答案一致，但无法匹配页面选项或空位，等待人工评判。');
+					}
+					result.confirmReview = reviews.add(
+						result.ctx.searchInfos,
+						() => {
+							if (this.isClose || !result.ctx?.root.isConnected) throw new Error('原题已失效，请重新开始答题。');
+						},
+						async () => {
+							const previous = { error: result.error, result: result.result };
+							result.error = undefined;
+							result.result = { finish: true, manual: true };
+							try {
+								await this.opts.onResultsUpdate?.(result, index, results);
+							} catch (error) {
+								Object.assign(result, previous);
+								throw error;
+							}
+						}
+					);
+				}
 
 				if (options?.enable_debug) {
 					console.log(
@@ -409,6 +442,8 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 
 		/** 答题线程 */
 		await Promise.all([resolverThread(), requestThreadHandler()]);
+		await reviews.wait();
+		reviews.dispose();
 
 		this.isRunning = false;
 		return results;
@@ -429,6 +464,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 		callback: (finishedRate: number, uploadable: boolean) => void | Promise<void>;
 	}) {
 		const { results, type, callback } = options;
+		if (this.isClose || results.some((result) => result.ctx && needsAIReview(result.ctx.searchInfos))) return;
 		if (type !== 'nomove') {
 			let finished = 0;
 			for (const result of results) {
@@ -464,6 +500,7 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 
 		this.once('close', () => {
 			this.isClose = true;
+			this.isRunning = false;
 		});
 
 		this.on('stop', () => {
@@ -481,6 +518,7 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 			console.debug('题目数量: ', this.opts.questions.length);
 		}
 		const results: SimplifyWorkResult[] = [];
+		const reviews = new AIReviewQueue(this);
 
 		for (let index = 0; index < questions.length; index++) {
 			/** 强行关闭 */
@@ -490,8 +528,9 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 			}
 			/** 检查是否暂停中 */
 			if (this.isStop) {
-				await waitForContinuate(() => this.isStop);
+				await waitForContinuate(() => this.isStop && !this.isClose);
 			}
+			if (this.isClose) return;
 
 			const question = questions[index];
 			results[index] = {
@@ -506,7 +545,9 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 
 			try {
 				const infos = await this.opts.answerer(question.text);
+				if (this.isClose) return;
 				results[index].searchInfos = infos.map((i) => ({
+					ensemble: i.ensemble,
 					ai: i.ai,
 					name: i.name,
 					homepage: i.homepage,
@@ -514,29 +555,64 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 					error: i.error
 				}));
 				results[index].requested = true;
-				this.opts.onResultsUpdate?.(results[index], index, results);
+				await this.opts.onResultsUpdate?.(results[index], index, results);
+				if (this.isClose) return;
 
 				try {
-					const resolved = await this.opts.resolver(infos);
+					const resolved = needsAIReview(infos)
+						? { finish: false, error: '等待人工评判' }
+						: await this.opts.resolver(infos);
+					if (this.isClose) return;
 					results[index].finish = resolved.finish;
 					results[index].error = resolved.error;
 					results[index].resolved = true;
+					if (infos.some((info) => info.ensemble) && !resolved.finish && !needsAIReview(infos)) {
+						requireAIReview(infos, '模型答案一致，但无法匹配，等待人工评判。');
+					}
+					if (needsAIReview(infos)) {
+						results[index].searchInfos.forEach((info, i) => {
+							info.results = [];
+							info.error = infos[i].error;
+						});
+						results[index]._confirmReview = reviews.add(
+							infos,
+							() => {
+								if (this.isClose) throw new Error('原任务已关闭。');
+							},
+							async () => {
+								const previous = { finish: results[index].finish, error: results[index].error };
+								results[index].finish = true;
+								results[index].error = undefined;
+								try {
+									await this.opts.onResultsUpdate?.(results[index], index, results);
+								} catch (error) {
+									Object.assign(results[index], previous);
+									throw error;
+								}
+							}
+						);
+					}
 				} catch (err) {
 					results[index].finish = false;
 					results[index].error = err instanceof Error ? err.message : String(err);
 					results[index].resolved = true;
 				}
-				this.opts.onResultsUpdate?.(results[index], index, results);
+				await this.opts.onResultsUpdate?.(results[index], index, results);
 			} catch (err) {
+				if (this.isClose) return;
 				results[index].requested = true;
 				results[index].resolved = false;
 				results[index].finish = true;
 				results[index].error = err instanceof Error ? err.message : String(err);
-				this.opts.onResultsUpdate?.(results[index], index, results);
+				await this.opts.onResultsUpdate?.(results[index], index, results);
 			}
+			if (this.isClose) return;
 
 			await $.sleep(this.opts.period);
 		}
+		await reviews.wait();
+		reviews.dispose();
+		this.isRunning = false;
 	}
 }
 

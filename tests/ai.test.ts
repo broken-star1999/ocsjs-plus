@@ -36,9 +36,8 @@ async function main() {
 	assert.equal(buildAIRequest(config, question).model, 'test-model');
 	assert.equal(buildAIRequest(config, question).stream, false);
 	assert.match(String(buildAIRequest(config, question).messages[0].content), /思考内容.*简体中文/);
-	assert.match(String(buildAIRequest(config, question).messages[0].content), /单选题只返回一个大写选项字母/);
-	assert.match(String(buildAIRequest(config, question).messages[0].content), /"answers":\["AC"\]/);
-	assert.match(String(buildAIRequest(config, question).messages[0].content), /判断题优先/);
+	assert.match(String(buildAIRequest(config, question).messages[0].content), /本题为单选题。只返回一个大写选项字母/);
+	assert.doesNotMatch(String(buildAIRequest(config, question).messages[0].content), /本题为多选题|本题为判断题/);
 	assert.doesNotMatch(JSON.stringify(buildAIRequest(config, question)), /option_indices|option_items/);
 	assert.equal(
 		buildAIRequest({ ...config, endpoint: 'https://api.deepseek.com' }, question).response_format?.type,
@@ -58,6 +57,16 @@ async function main() {
 	assert.equal(parseAIAnswer('{"answers":["D"],"option_indices":[3],"uncertain":false}', 'unknown'), 'D');
 	assert.equal(parseAIAnswer('```json\n{"answers":["甲","乙"],"uncertain":false}\n```', 'multiple'), '甲#乙');
 	assert.equal(parseAIAnswer('{"answers":["false"],"uncertain":false}', 'judgement'), '错误');
+	assert.equal(parseAIAnswer('{"answers":["A"],"uncertain":false}', 'judgement', 'A. 对\nB. 错'), '正确');
+	assert.equal(parseAIAnswer('{"answers":["A"],"uncertain":false}', 'judgement', 'A. 错\nB. 对'), '错误');
+	assert.equal(parseAIAnswer('{"answers":["b"],"uncertain":false}', 'judgement', 'A. 错\nB. 对'), '正确');
+	assert.equal(parseAIAnswer('{"answers":["B"],"uncertain":false}', 'single', 'A. 对\nB. 错'), '错误');
+	assert.equal(parseAIAnswer('{"answers":["√"],"uncertain":false}', 'judgement'), '正确');
+	assert.equal(parseAIAnswer('{"answers":["×"],"uncertain":false}', 'judgement'), '错误');
+	assert.throws(() => parseAIAnswer('{"answers":["A"],"uncertain":false}', 'judgement'));
+	assert.throws(() => parseAIAnswer('{"answers":["B"],"uncertain":false}', 'judgement', 'A. 甲\nB. 乙'));
+	assert.throws(() => parseAIAnswer('{"answers":["C"],"uncertain":false}', 'judgement', 'A. 对\nB. 错'));
+	assert.throws(() => parseAIAnswer('{"answers":["这道题是正确的"],"uncertain":false}', 'judgement', 'A. 对\nB. 错'));
 	assert.equal(parseAIAnswer('{"answers":[],"uncertain":true}'), undefined);
 	assert.throws(() => parseAIAnswer('答案是 B'));
 	assert.throws(() => parseAIAnswer('{"answers":[{"code":"alert(1)"}],"uncertain":false}'));
@@ -270,6 +279,20 @@ async function main() {
 		(await solve('single', ['A. 对', 'B. 错'], ['错误'])).clicked.map((item) => item.index),
 		[1]
 	);
+	for (const type of ['single', 'judgement'] as const) {
+		assert.deepEqual(
+			(await solve(type, ['A. 对', 'B. 错'], ['A'])).clicked.map((item) => item.index),
+			[0]
+		);
+		assert.deepEqual(
+			(await solve(type, ['A. 错', 'B. 对'], ['B'])).clicked.map((item) => item.index),
+			[1]
+		);
+		assert.deepEqual(
+			(await solve(type, ['A. 错', 'B. 对'], ['A'])).clicked.map((item) => item.index),
+			[0]
+		);
+	}
 
 	const pictureOptions = ['A', 'B', 'C', 'D'].map((letter) => 'https://example.com/' + letter + '.png');
 	const pictureEnv = {
