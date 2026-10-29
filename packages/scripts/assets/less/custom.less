@@ -353,6 +353,88 @@ modal-element {
 }
 
 /** ===== 搜索结果样式（从 easy-us 迁移，仅 OCS 项目使用） ===== */
+// 主悬浮窗按内容取宽，但不让题目、图片或长答案决定无限宽度。
+container-element.normal {
+	max-width: min(640px, calc(100vw - 32px));
+	min-width: min(300px, calc(100vw - 32px));
+	box-sizing: border-box;
+
+	> header-element {
+		min-width: 0;
+		.header-menu-bar {
+			flex-wrap: wrap;
+			box-sizing: border-box;
+		}
+		.profile {
+			min-width: 0;
+			max-width: 100%;
+			overflow-wrap: anywhere;
+		}
+		.switch,
+		.close {
+			flex-shrink: 0;
+		}
+		.extra-menu-bar {
+			box-sizing: border-box;
+			flex-wrap: wrap;
+		}
+	}
+
+	> .body {
+		min-width: 0;
+		max-width: 100% !important; // 覆盖 easy-us 写入的视口宽度上限，正文跟随外框。
+		overflow-wrap: anywhere;
+
+		> script-panel-element {
+			min-width: 0;
+			max-width: 100%;
+			box-sizing: border-box;
+			.script-panel-body {
+				min-width: 0;
+				max-width: 100%;
+				box-sizing: border-box;
+			}
+			img {
+				max-width: 100%;
+				height: auto;
+			}
+			pre {
+				max-width: 100%;
+				overflow-x: auto;
+			}
+			input:not([type='checkbox'], [type='radio'], [type='button'], [type='submit']),
+			select,
+			textarea,
+			.config-provider-container {
+				min-width: 0;
+				max-width: 100%;
+				box-sizing: border-box;
+			}
+			.config-provider-container {
+				flex-wrap: wrap;
+			}
+		}
+	}
+}
+
+@media (max-width: 600px) {
+	container-element.normal > .body > script-panel-element .configs {
+		display: block;
+		width: 100%;
+		.configs-body,
+		config-element,
+		config-element label,
+		config-element .config-wrapper {
+			display: block;
+			width: auto;
+			white-space: normal;
+		}
+		config-element .config-wrapper > *:not(.tooltip) {
+			float: none;
+		}
+	}
+}
+
 .search-infos-num {
 	width: 26px;
 	margin: 2px;
@@ -640,6 +722,66 @@ search-infos-element {
 	p {
 		margin: 8px 0px;
 	}
+}
+
+// 更新说明随弹窗可用宽度排版，不继承通用 Markdown 的 400px 上限。
+.markdown.plus-release-notes {
+	width: 100%;
+	max-width: 100%;
+	box-sizing: border-box;
+	overflow-wrap: anywhere;
+
+	img {
+		max-width: 100%;
+		height: auto;
+	}
+
+	pre {
+		max-width: 100%;
+		overflow-x: auto;
+	}
+}
+
+[data-plus-update-modal] modal-element {
+	max-width: calc(100vw - 32px);
+	box-sizing: border-box;
+
+	.modal-footer > div {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 8px;
+
+		> button {
+			margin: 0;
+		}
+	}
+}
+
+.plus-update-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	margin-top: 12px;
+}
+
+.plus-update-install,
+.plus-update-actions > button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	max-width: 100%;
+	min-height: 28px;
+	margin: 0;
+	padding: 4px 10px;
+	font: inherit;
+	line-height: 1.4;
+	white-space: normal;
+	overflow-wrap: anywhere;
+	text-decoration: none;
+	vertical-align: middle;
 }
 
 /** ===== 动画 ===== */
@@ -1193,7 +1335,7 @@ modal-element .modal-cancel-button:hover {
 	font-size: 12px;
 }
 
-// 外层窗口按 max-content 取宽；在线搜题须独立限宽，避免多图和长文字撑大窗口。
+// 在线搜题使用更紧凑的独立宽度，并同时遵守主悬浮窗上限。
 .ocs-online-search-panel {
 	width: min(520px, calc(100vw - 64px));
 	max-height: min(700px, 72vh);

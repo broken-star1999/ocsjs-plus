@@ -621,11 +621,13 @@ export const BackgroundProject = Project.create({
 					getLastVersion: getLatestPlusRelease,
 					showChangelog: async () => {
 						const content = h('div', {
-							className: 'markdown card',
+							className: 'markdown plus-release-notes card',
 							textContent: '正在读取 OCS Plus 发布日志…',
 							style: { maxHeight: '55vh', overflow: 'auto' }
 						});
-						$modal.simple({ title: 'OCS Plus 更新日志', width: 680, content });
+						$modal
+							.simple({ title: 'OCS Plus 更新日志', width: 680, content })
+							?.setAttribute('data-plus-update-modal', '');
 						try {
 							const release = await this.methods.getLastVersion();
 							if (release) {
@@ -666,7 +668,7 @@ export const BackgroundProject = Project.create({
 							h('a', { href: PLUS_RELEASES_URL, target: '_blank', rel: 'noopener noreferrer' }, '打开 OCS Plus 发布页')
 						]),
 						report,
-						h('div', {}, [check, changelog])
+						h('div', { className: 'plus-update-actions' }, [check, changelog])
 					])
 				);
 				const load = async () => {
@@ -698,7 +700,7 @@ export const BackgroundProject = Project.create({
 										href: release.downloadUrl,
 										target: '_blank',
 										rel: 'noopener noreferrer',
-										className: 'base-style-button'
+										className: 'base-style-button plus-update-install'
 									},
 									'安装 OCS Plus ' + release.version
 								)
@@ -728,7 +730,7 @@ export const BackgroundProject = Project.create({
 							content: h('div', {}, [
 								h('p', '发现新版本：' + release.version + '（当前 ' + infos.script.version + '）'),
 								h('div', {
-									className: 'markdown',
+									className: 'markdown plus-release-notes',
 									innerHTML: markdown(release.notes || '该版本未填写更新日志。'),
 									style: { maxHeight: '45vh', overflow: 'auto' }
 								})
@@ -754,6 +756,7 @@ export const BackgroundProject = Project.create({
 								})
 							])
 						});
+						modal?.setAttribute('data-plus-update-modal', '');
 					} catch (error) {
 						console.warn('OCS Plus 更新检查失败', error);
 					}

@@ -1537,6 +1537,82 @@ modal-element .modal-confirm-button:disabled {
   font-weight: 500;
 }
 /** ===== 搜索结果样式（从 easy-us 迁移，仅 OCS 项目使用） ===== */
+container-element.normal {
+  max-width: min(640px, calc(100vw - 32px));
+  min-width: min(300px, calc(100vw - 32px));
+  box-sizing: border-box;
+}
+container-element.normal > header-element {
+  min-width: 0;
+}
+container-element.normal > header-element .header-menu-bar {
+  flex-wrap: wrap;
+  box-sizing: border-box;
+}
+container-element.normal > header-element .profile {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+container-element.normal > header-element .switch,
+container-element.normal > header-element .close {
+  flex-shrink: 0;
+}
+container-element.normal > header-element .extra-menu-bar {
+  box-sizing: border-box;
+  flex-wrap: wrap;
+}
+container-element.normal > .body {
+  min-width: 0;
+  max-width: 100% !important;
+  overflow-wrap: anywhere;
+}
+container-element.normal > .body > script-panel-element {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+container-element.normal > .body > script-panel-element .script-panel-body {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+container-element.normal > .body > script-panel-element img {
+  max-width: 100%;
+  height: auto;
+}
+container-element.normal > .body > script-panel-element pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+container-element.normal > .body > script-panel-element input:not([type='checkbox'], [type='radio'], [type='button'], [type='submit']),
+container-element.normal > .body > script-panel-element select,
+container-element.normal > .body > script-panel-element textarea,
+container-element.normal > .body > script-panel-element .config-provider-container {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+container-element.normal > .body > script-panel-element .config-provider-container {
+  flex-wrap: wrap;
+}
+@media (max-width: 600px) {
+  container-element.normal > .body > script-panel-element .configs {
+    display: block;
+    width: 100%;
+  }
+  container-element.normal > .body > script-panel-element .configs .configs-body,
+  container-element.normal > .body > script-panel-element .configs config-element,
+  container-element.normal > .body > script-panel-element .configs config-element label,
+  container-element.normal > .body > script-panel-element .configs config-element .config-wrapper {
+    display: block;
+    width: auto;
+    white-space: normal;
+  }
+  container-element.normal > .body > script-panel-element .configs config-element .config-wrapper > *:not(.tooltip) {
+    float: none;
+  }
+}
 .search-infos-num {
   width: 26px;
   margin: 2px;
@@ -1784,6 +1860,57 @@ search-infos-element .error {
 .markdown h6,
 .markdown p {
   margin: 8px 0px;
+}
+.markdown.plus-release-notes {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+}
+.markdown.plus-release-notes img {
+  max-width: 100%;
+  height: auto;
+}
+.markdown.plus-release-notes pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+[data-plus-update-modal] modal-element {
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+}
+[data-plus-update-modal] modal-element .modal-footer > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+[data-plus-update-modal] modal-element .modal-footer > div > button {
+  margin: 0;
+}
+.plus-update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.plus-update-install,
+.plus-update-actions > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 4px 10px;
+  font: inherit;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+  vertical-align: middle;
 }
 /** ===== 动画 ===== */
 @keyframes show {
