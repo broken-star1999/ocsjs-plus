@@ -64,6 +64,8 @@ export function updateEdgeMode() {
 			setTimeout(() => {
 				container.classList.remove(SNAP_ANIM_CLASS);
 				snapping = false;
+				if (render.cfg.visual === 'normal' && !headerDragging)
+					requestAnimationFrame(() => ensurePanelInViewport(container));
 			}, SNAP_ANIMATION_MS);
 		}
 	} else {
@@ -192,6 +194,14 @@ export function initEdgeMinimize(retry = 3) {
 	}
 	inited = true;
 	const render = BackgroundProject.scripts.render;
+	let layoutFrame = 0;
+	const fitNormalPanel = () => {
+		if (layoutFrame) return;
+		layoutFrame = requestAnimationFrame(() => {
+			layoutFrame = 0;
+			if (render.cfg.visual === 'normal' && !headerDragging && !snapping) ensurePanelInViewport(container);
+		});
+	};
 
 	// 图标元素：edge 模式下替代 header 显示，支持点击还原与拖拽
 	const edgeIcon = h('div', {
@@ -216,19 +226,29 @@ export function initEdgeMinimize(retry = 3) {
 			hideDropZone();
 			// 不依赖配置监听时序，松手直接判定
 			updateEdgeMode();
+			fitNormalPanel();
 		}
 	});
 	document.addEventListener('pointercancel', () => {
 		headerDragging = false;
 		hideDropZone();
+		fitNormalPanel();
 	});
 
 	// 状态/位置变化时重新判定（覆盖标题栏按钮、三击重置、moveToEdge）
-	render.onConfigChange('visual', () => updateEdgeMode());
+	render.onConfigChange('visual', () => {
+		updateEdgeMode();
+		fitNormalPanel();
+	});
 	render.onConfigChange('x', () => updateEdgeMode());
-	// 视口缩放时右侧吸附需重新对齐
-	window.addEventListener('resize', () => updateEdgeMode());
+	// 正常窗口在视口缩小或内容改变后保持可见；最小化吸附仍按原规则处理。
+	window.addEventListener('resize', () => {
+		updateEdgeMode();
+		fitNormalPanel();
+	});
+	if (typeof ResizeObserver !== 'undefined') new ResizeObserver(fitNormalPanel).observe(container);
 
 	// 初始化判定（覆盖刷新后已持久化的 edge 状态）
 	updateEdgeMode();
+	fitNormalPanel();
 }

@@ -3,6 +3,43 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
+const longUpdateNotes = [
+	'## 模拟长更新说明',
+	'',
+	'以下内容仅用于本地布局验收，不是实际发布说明，也不会访问真实 AI 服务。',
+	'',
+	'### 长列表',
+	'',
+	...Array.from(
+		{ length: 24 },
+		(_, index) =>
+			`- 第 ${index + 1} 项：检查题目提取、候选答案、人工处理与更新通知的长文本阅读，确保正文使用弹窗可用宽度。`
+	),
+	'',
+	'### 长链接',
+	'',
+	'https://example.invalid/ocs-plus/local-layout-check/' + 'long-release-path-without-spaces-'.repeat(32),
+	'',
+	'### 宽代码块',
+	'',
+	'```javascript',
+	'const description = "' + 'local_fixture_without_real_credentials_'.repeat(32) + '";',
+	'console.log(description);',
+	'```',
+	'',
+	'### 宽表格',
+	'',
+	'| 模型 | 请求内容 | 完成情况 | 额外信息 |',
+	'| --- | --- | --- | --- |',
+	'| 本地模拟模型 | ' + 'wide_table_cell_without_spaces_'.repeat(20) + ' | 已返回 | 仅用于布局验收 |',
+	'| 本地总结模型 | 题目、各次回答与思考 | 待人工检查 | 多列长内容应在容器内处理 |',
+	'',
+	'### 1600px 图片',
+	'',
+	'<img src="/question.svg?wide=1" width="1600" height="320" alt="本地1600px宽更新说明示例图">',
+	'',
+	'**长日志结束标记 LONG-UPDATE-END**'
+].join('\n');
 const html = `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><title>OCS Plus · 本地模拟预览</title>
 <style>body{font:16px system-ui;background:#f1f5f9;padding:32px;color:#16324f}#fixture{max-width:420px;line-height:1.8}li{font-size:13px}#preview-mode{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:2147483647;padding:6px 16px;border-radius:8px;background:#fff1cb;color:#795107;border:1px solid #e0ba60;font:13px system-ui;pointer-events:none;white-space:nowrap}</style>
 <div id="preview-mode" role="note">本地模拟预览 · AI 与更新响应均为模拟 · 请勿填写真实密钥</div>
@@ -13,6 +50,7 @@ const html = `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><title>OCS
 <p><button id="layout-example">五图长题示例</button></p>
 <p><button id="add-frame">加载测试子页面</button> <button id="child-call">发起子页面模拟请求</button></p>
 <p><button id="auto-results">生成自动搜题示例</button></p>
+<p><button id="wide-results">加载超宽结果测试</button></p>
 <p><button id="retry-example">加载单题重做测试</button></p><section id="retry-questions"></section>
 <p>请求记录：</p><ol id="requests"></ol></main>
 <script>
@@ -109,8 +147,11 @@ window.GM_xmlhttpRequest=opts=>{
    const base='https://github.com/${
 			require('../packages/scripts/src/config/plus-repository.json').repository
 		}/releases/download/v5.3.0/';
+   const notes=mode==='empty'?'':mode==='long'?${JSON.stringify(
+			longUpdateNotes
+		)}:'## 模拟更新说明\\n\\n- 验证 OCS Plus 仓库更新界面\\n- 此版本仅用于本地模拟，不是实际发布';
    opts.onload({status:200,responseText:JSON.stringify({tag_name:'v5.3.0',draft:false,prerelease:false,
-    body:'## 模拟更新说明\\n\\n- 验证 OCS Plus 仓库更新界面\\n- 此版本仅用于本地模拟，不是实际发布',
+    body:notes,
     assets:mode==='pending'?[]:['ocs.user.js','ocs.meta.js'].map(name=>({name,state:'uploaded',size:100,browser_download_url:base+name}))})});return;
   }
   if(fail){opts.onload({status:401,responseText:'Authentication failed'});return}
@@ -155,7 +196,27 @@ document.querySelector('#auto-results').onclick=async()=>{
  });
  try{await worker.doWork();await Promise.all(pending)}finally{button.disabled=false}
 };
-OCS.start({projects:[{name:'通用',scripts:{settings:OCS.CommonProject.scripts.settings,onlineSearch:OCS.CommonProject.scripts.onlineSearch,workResults:OCS.CommonProject.scripts.workResults,elementRegister:OCS.BackgroundProject.scripts.elementRegister,update:OCS.BackgroundProject.scripts.update,render:OCS.RenderScript}}],renderConfig:{
+document.querySelector('#wide-results').onclick=async()=>{
+ const button=document.querySelector('#wide-results');button.disabled=true;
+ try{
+  const results=OCS.CommonProject.scripts.workResults;
+  const question='超宽结果本地布局测试：'+'QuestionWithoutSpaces_'.repeat(140)+'\\n'+location.origin+'/question.svg?wide=1';
+  const answers=[
+   'AnswerWithoutSpaces_'.repeat(140),
+   'const wideLiteral = "'+'code_token_without_spaces_'.repeat(120)+'";\\nfunction localFixture(){\\n  return wideLiteral;\\n}\\n// WIDE-RESULT-END'
+  ];
+  const call={id:'local-wide-layout',startedAt:Date.now(),provider:'本地布局数据（未调用API）',model:'layout-fixture',question:'超宽结果本地布局测试',imageCount:1,status:'success',durationMs:0};
+  const row={question,type:'completion',requested:true,resolved:true,finish:true,searchInfos:[{
+   name:'超宽结果本地模拟（未调用API）',ai:{call,reasoning:'此结果直接写入真实结果存储，只验证长文本、代码和图片布局。'},
+   results:[[question,answers.join('#'),{ai:true,ai_native:true,answers}]]
+  }]};
+  await results.methods.clearResults();results.cfg.dynamicResults=false;results.cfg.currentResultIndex=0;
+  await results.methods.fillAll([row]);
+  await OCS.BackgroundProject.scripts.render.methods.pin(results);
+  OCS.BackgroundProject.scripts.render.methods.normal();
+ }finally{button.disabled=false}
+};
+OCS.start({projects:[{name:'通用',scripts:{settings:OCS.CommonProject.scripts.settings,onlineSearch:OCS.CommonProject.scripts.onlineSearch,workResults:OCS.CommonProject.scripts.workResults,edgeMinimize:OCS.CommonProject.scripts.edgeMinimize,elementRegister:OCS.BackgroundProject.scripts.elementRegister,update:OCS.BackgroundProject.scripts.update,render:OCS.RenderScript}}],renderConfig:{
  renderScript:OCS.RenderScript,styles:[${JSON.stringify(
 		fs.readFileSync(path.join(root, 'dist/style.css'), 'utf8')
  )}],defaultPanelName:location.search.includes('updates=')?'background.update':location.search.includes('results=1')?'common.work-results':location.search.includes('search=1')?'common.online-search':'common.settings',title:'OCS Plus · 本地模拟预览'
@@ -201,6 +262,12 @@ if (require.main === module)
 		.createServer((req, res) => {
 			if (new URL(req.url, 'http://127.0.0.1').pathname === '/question.svg') {
 				res.setHeader('Content-Type', 'image/svg+xml');
+				if (new URL(req.url, 'http://127.0.0.1').searchParams.get('wide') === '1') {
+					res.end(
+						'<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="320" viewBox="0 0 1600 320"><rect width="1600" height="320" fill="#eef2ff"/><rect x="20" y="20" width="1560" height="280" rx="24" fill="#4263eb"/><text x="800" y="176" text-anchor="middle" font-family="sans-serif" font-size="48" fill="white">LOCAL UPDATE LAYOUT FIXTURE · 1600px</text></svg>'
+					);
+					return;
+				}
 				res.end(
 					'<svg xmlns="http://www.w3.org/2000/svg" width="140" height="70"><rect width="140" height="70" fill="white"/><circle cx="40" cy="35" r="20" fill="#4263eb"/><circle cx="100" cy="35" r="20" fill="#14b8a6"/></svg>'
 				);

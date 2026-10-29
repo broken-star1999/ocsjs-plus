@@ -1544,6 +1544,8 @@ export const CommonProject = Project.create({
 					createWorkResultsPanel: (mount?: HTMLElement) => {
 						const container = mount || h('div');
 						container.style.width = '400px';
+						container.style.maxWidth = '100%';
+						container.style.boxSizing = 'border-box';
 						/** 记录滚动高度 */
 						let scrollPercent = 0;
 						let questionRetryBusy = false;
