@@ -13,6 +13,7 @@ import { CommonEvents, CommonProject } from '../projects/common';
 import { $console, BackgroundProject } from '../projects/background';
 import { CommonWorkOptions } from '.';
 import { createIframeControlSession } from './iframe-control-bar';
+import { registerQuestionRetry } from './question-retry-control';
 import {
 	buildAnswererEnv,
 	createAnswererWrappersSignature,
@@ -425,6 +426,8 @@ export function simplifyWorkResult(
 			.join('<br>') ||
 		'';
 	return {
+		retry: registerQuestionRetry(wr),
+		retrying: wr.retrying,
 		requested: wr.requested,
 		searching: wr.searching,
 		resolved: wr.resolved,
@@ -590,7 +593,7 @@ export function createCommonAnswerer(options: {
 		};
 		// Upstream cache keys only contain the title; AI also depends on options/model/images.
 		// Bypass that cache to prevent an old answer or another course's options being reused.
-		return options.answererWrappers.some((wrapper) => wrapper.ai)
+		return ctx.forceSearch || options.answererWrappers.some((wrapper) => wrapper.ai)
 			? search()
 			: BackgroundProject.scripts.data.methods.searchAnswerInCaches(title, search);
 	};

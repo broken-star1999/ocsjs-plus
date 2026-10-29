@@ -36,6 +36,7 @@ import { initEdgeMinimize } from '../utils/edge-minimize';
 import { openAIProviderManager } from '../utils/ai-provider-manager';
 import { PLUS_REPO_URL } from '../utils/plus-update';
 import { openAICallLog } from '../utils/ai-call-log-panel';
+import { createQuestionRetryControl } from '../utils/question-retry-control';
 import { readSearchSelection, expandSearchImages, SearchSelection } from '../utils/online-search-selection';
 import {
 	createAnswererWrapperSection,
@@ -1397,6 +1398,7 @@ export const CommonProject = Project.create({
 						container.style.width = '400px';
 						/** 记录滚动高度 */
 						let scrollPercent = 0;
+						let questionRetryBusy = false;
 
 						/** 列表 */
 						const list = $ui.tooltip(h('div', { className: 'work-result-list' }));
@@ -1449,6 +1451,7 @@ export const CommonProject = Project.create({
 
 								// 进度统计：从结果数组派生，与序号状态严格一致
 								const stats = count(results);
+								questionRetryBusy = results.some((result) => result.retrying);
 
 								// 如果序号指向的结果为空，则代表已经被清空，则重新让index变成0
 								if (results[this.cfg.currentResultIndex] === undefined) {
@@ -1559,7 +1562,8 @@ export const CommonProject = Project.create({
 										infos: result.searchInfos,
 										question: result.question,
 										type: result.type
-									})
+									}),
+									createQuestionRetryControl(result, state.workResult.isWorkerWorking || questionRetryBusy)
 								]);
 							} else {
 								return h('div', 'undefined');

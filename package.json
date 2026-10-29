@@ -1,6 +1,6 @@
 {
 	"name": "ocsjs-plus",
-	"version": "0.1.2",
+	"version": "0.1.3-beta.1",
 	"description": "OCS Plus - 基于 OCS 的可扩展网课助手",
 	"types": "./lib/src/core/index.d.ts",
 	"main": "./lib/src/core/index.js",
@@ -19,7 +19,8 @@
 		"pub:minor": "npm version minor && pnpm build:core && npm publish",
 		"pub:major": "npm version major && pnpm build:core && npm publish",
 		"changelog:simplify": "gulp -f ./scripts/simplify_changelog.js",
-		"test": "tsx tests/resolver.test.ts && tsx --import ./tests/setup-browser-env.ts tests/ai.test.ts && tsx --import ./tests/setup-browser-env.ts tests/online-search-selection.test.ts && tsx tests/ai-providers.test.ts && tsx tests/plus-update.test.ts",
+		"test": "tsx tests/resolver.test.ts && tsx --import ./tests/setup-browser-env.ts tests/ai.test.ts && tsx --import ./tests/setup-browser-env.ts tests/question-retry.test.ts && tsx --import ./tests/setup-browser-env.ts tests/online-search-selection.test.ts && tsx tests/ai-providers.test.ts && tsx tests/plus-update.test.ts",
+		"test:retry": "tsx --import ./tests/setup-browser-env.ts tests/question-retry.test.ts",
 		"test:ai": "tsx --import ./tests/setup-browser-env.ts tests/ai.test.ts",
 		"preview:ai": "node tests/preview-ai.cjs",
 		"test:eus": "pnpm -C A:/VSCode/code/eus build && pnpm -C packages/core link A:/VSCode/code/eus && pnpm -C packages/scripts link A:/VSCode/code/eus && npm run build",

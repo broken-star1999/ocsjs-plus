@@ -1,5 +1,7 @@
 # OCS Plus 网课助手
 
+> **测试版 0.1.3-beta.1**：[安装测试版](https://github.com/broken-star1999/ocsjs-plus/releases/download/v0.1.3-beta.1/ocs.user.js) · [测试版说明](https://github.com/broken-star1999/ocsjs-plus/releases/tag/v0.1.3-beta.1)。新增指定单题重做，需手动安装；Latest 正式版仍为 0.1.2。
+
 > 当前正式版本为 **0.1.2**，包含划词选图、每题 AI 调用详情与思考内容，以及选择题字母答案匹配。
 > [安装正式版](https://github.com/broken-star1999/ocsjs-plus/releases/download/v0.1.2/ocs.user.js) · [版本说明](https://github.com/broken-star1999/ocsjs-plus/releases/tag/v0.1.2) · [全部版本](https://github.com/broken-star1999/ocsjs-plus/releases)
 >
@@ -98,6 +100,19 @@ OCS Plus 保留原版的课程适配、题目提取与答案填写流程，开�
 
 这些功能已通过自动化测试、构建和本地模拟交互检查。真实 AI 接口及课程页面的完整回填流程仍需实际测试。
 
+## 0.1.3-beta.1 测试功能：指定单题重做
+
+测试版加入 **🔄 重做本题**：整次自动答题结束后，在搜索结果面板点击题号，再点击该题答案下方的按钮。它会绕过答案缓存，使用原任务的接口和模型重新查询、匹配并替换这一题的答案，只更新对应题号的结果、调用信息和思考内容，不运行整卷的完成或提交流程。若修改了模型配置，请先重新开始任务再使用单题重做。
+
+当前接入范围为 **超星整卷作业／考试页面（脚本的整卷预览模式）和新版随堂练习**，支持单选、多选、文字判断与填空，包括图片选择题。逐题跳转页面、章节测试、连线／阅读等特殊题型及其他平台暂不提供此按钮。已发布的 0.1.2 正式安装包尚不包含它。
+
+- 多选会取消新答案中不包含的旧选项；同一答案重复重做不会反向取消勾选。
+- 查询失败、无法确定、选项不匹配或填空数量错误时，不先清空页面已有答案；详情显示本次失败原因。
+- 运行中的整卷任务不能同时重做单题；同一任务一次只允许重做一题。
+- 题目已离开页面、元素被替换、题干／图片／选项发生变化或原任务被替代时会停止重做，防止旧响应写入新题目。若页面填写中断，请检查该题实际状态。
+
+运行 `npm run test:retry` 可执行专项回归。`npm run preview:ai` 的 `?results=1` 页面提供“加载单题重做测试”按钮，使用实际构建、真实 DOM 点击与模拟 AI 响应演示四类题型，不调用真实 AI 服务。真实课程页面上的完整操作仍需实测。
+
 ## 答题行为与数据
 
 - 当前任务只使用选中的一个提供商和模型。接口失败时不会自动换用其他提供商或题库。
@@ -187,6 +202,6 @@ npm run preview:ai
 
 ## 致谢与许可
 
-感谢 [enncy](https://github.com/enncy) 及 [OCS 贡献者](https://github.com/ocsjs/ocsjs/graphs/contributors) 提供原版项目。课程平台适配和原有功能的使用方法可参考 [OCS 文档](https://docs.ocsjs.com)，Plus 的 AI 配置以本 README 为准。
+OCS Plus 由 [broken-star1999](https://github.com/broken-star1999) 维护，基于 [enncy](https://github.com/enncy) 及 [OCS 贡献者](https://github.com/ocsjs/ocsjs/graphs/contributors) 提供的原版项目扩展。构建脚本同时注明 Plus 维护者和原版作者。课程平台适配和原有功能的使用方法可参考 [OCS 文档](https://docs.ocsjs.com)，Plus 的 AI 配置以本 README 为准。
 
 本项目保留原作者署名，使用 [MIT License](LICENSE)。提供商图标使用 [LobeHub Icons](https://github.com/lobehub/lobe-icons) 中的相关资源，其 MIT 许可声明保留在对应源文件中。

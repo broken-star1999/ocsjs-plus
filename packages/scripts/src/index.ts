@@ -24,6 +24,9 @@ export { YKTProject } from './projects/yuketang';
 export { RenderScript } from './render';
 export { logoSvg } from './utils/ui';
 export { PLUS_RELEASES_URL } from './utils/plus-update';
+export { createCXQuestionRetryAdapter } from './utils/cx-question-retry';
+export { registerQuestionRetry } from './utils/question-retry-control';
+export { simplifyWorkResult, createCommonAnswerer, extractTextWithImages } from './utils/work';
 export {
 	setAnswererConfigProvider,
 	getAnswererConfigProvider,

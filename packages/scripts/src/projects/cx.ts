@@ -9,8 +9,11 @@ import {
 	splitAnswer,
 	domSearch,
 	domSearchAll,
-	SearchInformation
+	SearchInformation,
+	enableSingleQuestionRetry,
+	QuestionTypes
 } from '@ocsjs/core';
+import { createCXQuestionRetryAdapter } from '../utils/cx-question-retry';
 import { crackFont, collectChars, decryptElements, extractFontFromStyle } from '../utils/font-decrypt';
 import { $modal, h, $store, MessageElement, Project, Script, $el, $gm, $$el, $ui, cors, $message } from 'easy-us';
 
@@ -1028,6 +1031,22 @@ function workOrExam(
 	});
 
 	if (preview_mode) {
+		enableSingleQuestionRetry(
+			worker,
+			createCXQuestionRetryAdapter({
+				layout: 'exam',
+				type: (ctx) => {
+					const value = ctx.elements.type
+						.find((element) => element.getAttribute('name')?.match(/type\d+/))
+						?.getAttribute('value');
+					const type = getQuestionType(Number(value ?? -1));
+					return ['single', 'multiple', 'judgement', 'completion'].includes(type || '')
+						? (type as QuestionTypes)
+						: undefined;
+				},
+				optionText: (option) => extractTextWithImages(option).text
+			})
+		);
 		worker
 			.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug })
 			.then(() => {
@@ -1156,6 +1175,17 @@ function mobilelearn(opts: CommonWorkOptions) {
 		}
 	});
 
+	enableSingleQuestionRetry(
+		worker,
+		createCXQuestionRetryAdapter({
+			layout: 'practice',
+			type: (ctx) =>
+				typeof worker.opts.work === 'object' && typeof worker.opts.work.type === 'function'
+					? worker.opts.work.type(ctx)
+					: undefined,
+			optionText: (option) => extractTextWithImages(option).text
+		})
+	);
 	worker
 		.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug })
 		.then(() => {

@@ -37,6 +37,8 @@ export interface WorkContext<E> {
 	type: QuestionTypes;
 	/** 答案分隔符 */
 	answerSeparators?: string[];
+	/** 单题重做时绕过答案缓存，重新查询；不改变原任务配置。 */
+	forceSearch?: boolean;
 }
 
 /** 答案题目处理器结果 */
@@ -47,6 +49,9 @@ export interface ResolverResult {
 
 /** 答题结果 */
 export interface WorkResult<E extends RawElements> {
+	/** 仅在当前页面内有效，不可直接序列化。由已适配的平台提供。 */
+	retry?: () => Promise<void>;
+	retrying?: boolean;
 	/** 查题完毕 */
 	requested: boolean;
 	/** 正在搜题中（查题线程已启动但尚未返回，供结果面板显示等待动画） */
@@ -64,6 +69,9 @@ export interface WorkResult<E extends RawElements> {
  * 为什么不直接用 {@link WorkResult} ，因为对象里太多嵌套对象，一旦结果超过10个以上，可能导致 I/O 变慢，并且页面卡顿。
  */
 export interface SimplifyWorkResult {
+	/** 单题重做的页面会话地址，不包含 DOM、密钥或函数。 */
+	retry?: { id: string; frame: string };
+	retrying?: boolean;
 	/** 题目 */
 	question: string;
 	/** 题目类型 */

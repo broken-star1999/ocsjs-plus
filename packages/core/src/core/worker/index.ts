@@ -3,3 +3,4 @@ export * from './utils';
 export { OCSWorker, CustomOCSWorker } from './worker';
 export { createDefaultQuestionResolver } from './question.resolver';
 export * from './resolvers/index';
+export * from './single-question-retry';
