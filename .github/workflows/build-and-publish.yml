@@ -52,8 +52,9 @@ jobs:
           require('fs').appendFileSync(process.env.GITHUB_OUTPUT,
             `prerelease=${!!semver.prerelease(version)}\n`);
           NODE
-      - run: npm test
+      # Build workspace package entry points before running integration regressions.
       - run: npm run build
+      - run: npm test
       - name: Publish reviewed userscript
         uses: ncipollo/release-action@v1
         with:
