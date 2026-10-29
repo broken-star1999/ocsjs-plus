@@ -9,7 +9,10 @@ import {
 	getAIKeyStorage,
 	aiModelKey,
 	migrateAIProviders,
-	resolveAISelection,
+	createAIAnswererWrappers,
+	AIModelThreads,
+	AIEnsembleRule,
+	AISubjectiveRule,
 	AIProviderSource,
 	AIModel,
 	AnswererWrapper,
@@ -36,6 +39,15 @@ import { initEdgeMinimize } from '../utils/edge-minimize';
 import { openAIProviderManager } from '../utils/ai-provider-manager';
 import { PLUS_REPO_URL } from '../utils/plus-update';
 import { openAICallLog } from '../utils/ai-call-log-panel';
+import {
+	createQuestionRetryControl,
+	createManualReviewControl,
+	serializeManualReview,
+	requestReviewAction
+} from '../utils/question-retry-control';
+import { createAIConsensusSettingsButton } from '../utils/ai-consensus-settings';
+import { createAIWorkSummary } from '../utils/ai-work-status';
+import { isAIQuestionCacheSource } from '../utils/question-cache';
 import { readSearchSelection, expandSearchImages, SearchSelection } from '../utils/online-search-selection';
 import {
 	createAnswererWrapperSection,
@@ -47,6 +59,13 @@ import {
 } from '../utils/ui';
 
 const TAB_WORK_RESULTS_KEY = 'common.work-results.results';
+let workResultWrites: Promise<unknown> = Promise.resolve();
+/** Progress from different question threads must not overwrite another question's stored result. */
+function enqueueWorkResultWrite(action: () => Promise<void>): Promise<void> {
+	const next = workResultWrites.then(action);
+	workResultWrites = next.catch(() => {});
+	return next;
+}
 let onlineSelection: SearchSelection = { text: '', images: [] };
 const onlineSelectionListeners = new Set<() => void>();
 
@@ -99,7 +118,9 @@ export const CommonEvents = {
 const count = (results: SimplifyWorkResult[]) => ({
 	total: results.length,
 	requested: results.filter((r) => r.requested).length,
-	resolved: results.filter((r) => r.resolved).length
+	resolved: results.filter((r) => r.resolved).length,
+	finished: results.filter((r) => r.finish).length,
+	review: results.filter((r) => r.searchInfos.some((info) => info.ensemble?.status === 'review')).length
 });
 
 /**
@@ -109,7 +130,7 @@ const count = (results: SimplifyWorkResult[]) => ({
  * 接入全局设置的题库缓存开关（与 searchAnswerInCaches 读取侧语义一致：仅显式关闭时跳过）。
  */
 const cacheIfFinished = (result: SimplifyWorkResult) => {
-	if (CommonProject.scripts.settings.cfg.aiEnabled) return;
+	if (CommonProject.scripts.settings.cfg.aiEnabled || result.searchInfos.some(isAIQuestionCacheSource)) return;
 	if (CommonProject.scripts.settings.cfg.enableQuestionCaches === false) {
 		return;
 	}
@@ -233,7 +254,7 @@ export const CommonProject = Project.create({
 				notes: {
 					defaultValue: $ui.notes([
 						'✨鼠标移动到按钮或者输入框，可以看到提示！',
-						'在“模型提供商”中保存接口并添加模型，再选择“答题模型”。关闭 AI 后可使用原有题库。',
+						'在“模型提供商”中保存接口并添加模型，再选择普通模式模型或配置高级模式。关闭 AI 后可使用原有题库。',
 						'题目和选项将发送到你填写的 AI 服务；答案需自行核对。',
 						'设置后进入章节测试，作业，考试页面即可自动答题。'
 					]).outerHTML
@@ -252,6 +273,108 @@ export const CommonProject = Project.create({
 				aiVision: { defaultValue: false },
 				aiProviders: { defaultValue: [] as AIProviderSource[] },
 				aiProvidersMigrated: { defaultValue: false },
+				aiModelThreads: { defaultValue: [] as AIModelThreads[] },
+				aiConsensusThreshold: { defaultValue: 100 },
+				aiConfidenceEnabled: { defaultValue: false },
+				aiDecisionRule: { defaultValue: 'manual' as AIEnsembleRule },
+				aiSubjectiveRule: { defaultValue: 'manual' as AISubjectiveRule },
+				aiSubjectiveModel: { defaultValue: '' },
+				aiSummaryEnabled: { defaultValue: false },
+				aiSummaryModel: { defaultValue: '' },
+				aiAnswerMode: {
+					onload() {
+						if (this.parentElement)
+							Object.assign(this.parentElement.style, {
+								flexWrap: 'wrap',
+								gap: '8px',
+								width: 'min(440px, calc(100vw - 190px))',
+								maxWidth: '100%',
+								minWidth: '0'
+							});
+					},
+					label: 'AI 作答模式',
+					tag: 'select',
+					enableForAttribute: true,
+					defaultValue: 'basic' as 'basic' | 'advanced',
+					options: [
+						['basic', '普通模式'],
+						['advanced', '高级模式']
+					],
+					suffixSlot: (): HTMLElement => {
+						const settings = CommonProject.scripts.settings;
+						const controls = h('div', { style: { display: 'contents' } });
+						controls.append(
+							createAIConsensusSettingsButton({
+								read: () => ({
+									mode: settings.cfg.aiAnswerMode,
+									assignments: settings.cfg.aiModelThreads,
+									threshold: settings.cfg.aiConsensusThreshold,
+									confidenceEnabled: settings.cfg.aiConfidenceEnabled,
+									rule: settings.cfg.aiDecisionRule,
+									subjectiveRule: settings.cfg.aiSubjectiveRule,
+									subjectiveKey: settings.cfg.aiSubjectiveModel,
+									summaryEnabled: settings.cfg.aiSummaryEnabled,
+									summaryKey: settings.cfg.aiSummaryModel,
+									questionThreads: settings.cfg.thread,
+									sources: settings.cfg.aiProviders
+								}),
+								write: (patch) => {
+									if (patch.assignments) settings.cfg.aiModelThreads = patch.assignments;
+									if (patch.threshold !== undefined) settings.cfg.aiConsensusThreshold = patch.threshold;
+									if (patch.confidenceEnabled !== undefined) settings.cfg.aiConfidenceEnabled = patch.confidenceEnabled;
+									if (patch.rule !== undefined) settings.cfg.aiDecisionRule = patch.rule;
+									if (patch.subjectiveRule !== undefined) settings.cfg.aiSubjectiveRule = patch.subjectiveRule;
+									if (patch.subjectiveKey !== undefined) settings.cfg.aiSubjectiveModel = patch.subjectiveKey;
+									if (patch.summaryEnabled !== undefined) settings.cfg.aiSummaryEnabled = patch.summaryEnabled;
+									if (patch.summaryKey !== undefined) settings.cfg.aiSummaryModel = patch.summaryKey;
+								},
+								observe: (update) => {
+									const ids = [
+										settings.onConfigChange('aiAnswerMode', update),
+										settings.onConfigChange('aiModelThreads', update),
+										settings.onConfigChange('aiProviders', update),
+										settings.onConfigChange('aiConsensusThreshold', update),
+										settings.onConfigChange('aiConfidenceEnabled', update),
+										settings.onConfigChange('aiDecisionRule', update),
+										settings.onConfigChange('aiSubjectiveRule', update),
+										settings.onConfigChange('aiSubjectiveModel', update),
+										settings.onConfigChange('aiSummaryEnabled', update),
+										settings.onConfigChange('aiSummaryModel', update),
+										settings.onConfigChange('thread', update)
+									];
+									return () => ids.forEach((id) => settings.offConfigChange(id));
+								}
+							})
+						);
+						controls.append(
+							createAIWorkSummary({
+								read: () => settings.methods.getWorkOptions(),
+								observe: (update) => {
+									const keys = [
+										'aiEnabled',
+										'aiAnswerMode',
+										'aiProviders',
+										'aiSelectedModel',
+										'aiModelThreads',
+										'aiConsensusThreshold',
+										'aiConfidenceEnabled',
+										'aiDecisionRule',
+										'aiSubjectiveRule',
+										'aiSubjectiveModel',
+										'aiSummaryEnabled',
+										'aiSummaryModel',
+										'thread',
+										'answererWrappers',
+										'disabledAnswererWrapperNames'
+									] as const;
+									const ids = keys.map((key) => settings.onConfigChange(key, update));
+									return () => ids.forEach((id) => settings.offConfigChange(id));
+								}
+							})
+						);
+						return controls;
+					}
+				},
 				aiProviderManager: {
 					label: '模型提供商',
 					defaultValue: '管理提供商与模型',
@@ -279,7 +402,8 @@ export const CommonProject = Project.create({
 					}
 				},
 				aiSelectedModel: {
-					label: '答题模型',
+					label: '普通模式模型',
+					showIf: ['common.settings.aiAnswerMode', (mode) => mode !== 'advanced'],
 					tag: 'select',
 					defaultValue: '',
 					enableForAttribute: true,
@@ -971,13 +1095,13 @@ export const CommonProject = Project.create({
 				advancedSettings: {
 					...dropdownStyle,
 					defaultValue: false,
-					label: '高级设置',
+					label: '更多答题设置',
 					attrs: { type: 'checkbox', title: '请谨慎使用高级设置，可能会影响答题效果，小白在未理解的情况下谨慎调整。' }
 				},
 				thread: {
 					showIf: 'common.settings.advancedSettings',
 					elementClassName: 'config-details',
-					label: '线程数量（个）',
+					label: '同时处理题目数',
 					attrs: {
 						type: 'number',
 						min: 1,
@@ -1155,23 +1279,23 @@ export const CommonProject = Project.create({
 						// 使用 json 深拷贝，防止修改原始配置
 						const workOptions: typeof this.cfg = JSON.parse(JSON.stringify(this.cfg));
 						if (workOptions.aiEnabled) {
-							const ai = resolveAISelection({
-								sources: workOptions.aiProviders,
-								selection: workOptions.aiSelectedModel
-							});
-							workOptions.answererWrappers = ai
-								? [
-										{
-											name: 'AI · ' + ai.model,
-											url: ai.endpoint,
-											method: 'post',
-											type: 'GM_xmlhttpRequest',
-											headers: {},
-											handler: '',
-											ai
-										}
-								  ]
-								: [];
+							workOptions.answererWrappers = createAIAnswererWrappers(
+								{
+									sources: workOptions.aiProviders,
+									selection: workOptions.aiSelectedModel
+								},
+								workOptions.aiAnswerMode === 'advanced',
+								workOptions.aiModelThreads,
+								{
+									threshold: workOptions.aiConsensusThreshold,
+									confidenceEnabled: workOptions.aiConfidenceEnabled,
+									rule: workOptions.aiDecisionRule,
+									subjectiveRule: workOptions.aiSubjectiveRule,
+									subjectiveSelection: workOptions.aiSubjectiveModel,
+									summaryEnabled: workOptions.aiSummaryEnabled,
+									summarySelection: workOptions.aiSummaryModel
+								}
+							);
 							return workOptions;
 						}
 						/**
@@ -1210,6 +1334,23 @@ export const CommonProject = Project.create({
 						}
 					}
 				};
+			},
+			onrender({ panel }) {
+				panel.classList.add('ocs-ai-global-settings');
+				Object.assign(panel.style, {
+					fontFamily: 'system-ui,-apple-system,"Segoe UI",sans-serif',
+					fontSize: '14px',
+					lineHeight: '1.65',
+					width: 'min(640px, calc(100vw - 80px))',
+					maxWidth: '100%',
+					boxSizing: 'border-box'
+				});
+				panel.append(
+					h(
+						'style',
+						'.ocs-ai-global-settings .configs{width:100%;table-layout:fixed;box-sizing:border-box}.ocs-ai-global-settings .configs config-element label{width:140px;white-space:normal;overflow-wrap:anywhere}.ocs-ai-global-settings .config-wrapper select{max-width:100%;box-sizing:border-box}.ocs-ai-global-settings button{font-family:inherit;min-height:30px;border-radius:7px}.ocs-ai-global-settings input:not([type=checkbox]),.ocs-ai-global-settings select{font-family:inherit;min-height:30px;border-radius:6px}.ocs-ai-global-settings .ai-work-summary{box-sizing:border-box}.ocs-ai-global-settings .ai-work-summary strong{font-size:14px}'
+					)
+				);
 			},
 			// 实时更新内部设置
 			oncomplete() {
@@ -1293,8 +1434,10 @@ export const CommonProject = Project.create({
 			namespace: 'common.work-results',
 			configs: {
 				notes: {
-					defaultValue: $ui.notes(['点击题目序号，查看搜索结果', '如果没有搜到，可能是题库没有收录该题目答案'])
-						.outerHTML
+					defaultValue: $ui.notes([
+						'点击题目序号查看答案、决策依据和调用进度。',
+						'待人工题可比较候选、定位原题或重新请求；确认处理后任务才会完成。'
+					]).outerHTML
 				},
 				currentResultIndex: {
 					defaultValue: 0
@@ -1318,21 +1461,24 @@ export const CommonProject = Project.create({
 					 * 数组长度不足时以空占位结果补齐中间空位（多线程答题结果可能乱序到达）。
 					 */
 					update: async (index: number, result: SimplifyWorkResult): Promise<void> => {
-						const data = (await $store.getTab(TAB_WORK_RESULTS_KEY)) || [];
-						const placeholder = {
-							question: '',
-							searchInfos: [],
-							requested: false,
-							resolved: false,
-							type: undefined
-						} as unknown as SimplifyWorkResult;
-						while (data.length < index) {
-							data.push(placeholder);
-						}
-						data[index] = result;
-						await $store.setTab(TAB_WORK_RESULTS_KEY, data);
-						cacheIfFinished(result);
-						CommonEvents.emitWorkerChanged(result);
+						result = serializeManualReview(result);
+						return enqueueWorkResultWrite(async () => {
+							const data = (await $store.getTab(TAB_WORK_RESULTS_KEY)) || [];
+							const placeholder = {
+								question: '',
+								searchInfos: [],
+								requested: false,
+								resolved: false,
+								type: undefined
+							} as unknown as SimplifyWorkResult;
+							while (data.length < index) {
+								data.push(placeholder);
+							}
+							data[index] = result;
+							await $store.setTab(TAB_WORK_RESULTS_KEY, data);
+							cacheIfFinished(result);
+							CommonEvents.emitWorkerChanged(result);
+						});
 					},
 
 					/**
@@ -1346,32 +1492,35 @@ export const CommonProject = Project.create({
 					 * 仅当传入数组比当前存储更长时才写入（按位置保留已有最新状态），重复调用无副作用。
 					 */
 					fillAll: async (results: SimplifyWorkResult[]): Promise<void> => {
-						await $store.setTab(TAB_WORK_RESULTS_KEY, results);
+						return enqueueWorkResultWrite(() => $store.setTab(TAB_WORK_RESULTS_KEY, results));
 					},
 					append: async (result: SimplifyWorkResult): Promise<void> => {
+						result = serializeManualReview(result);
 						CommonProject.scripts.workResults.cfg.dynamicResults = true;
-						const data = (await $store.getTab(TAB_WORK_RESULTS_KEY)) || [];
-						// 空题目文本不参与匹配（防止多个空标题占位互相覆盖）
-						const index = result.question
-							? data.findIndex((r: SimplifyWorkResult) => r.question === result.question)
-							: -1;
-						if (index >= 0) {
-							data[index] = result;
-						} else {
-							data.push(result);
-						}
-						await $store.setTab(TAB_WORK_RESULTS_KEY, data);
-						cacheIfFinished(result);
-						CommonEvents.emitWorkerChanged(result);
+						return enqueueWorkResultWrite(async () => {
+							const data = (await $store.getTab(TAB_WORK_RESULTS_KEY)) || [];
+							// 空题目文本不参与匹配（防止多个空标题占位互相覆盖）
+							const index = result.question
+								? data.findIndex((r: SimplifyWorkResult) => r.question === result.question)
+								: -1;
+							if (index >= 0) {
+								data[index] = result;
+							} else {
+								data.push(result);
+							}
+							await $store.setTab(TAB_WORK_RESULTS_KEY, data);
+							cacheIfFinished(result);
+							CommonEvents.emitWorkerChanged(result);
+						});
 					},
 					/**
 					 * 清空搜索结果
 					 */
 					clearResults: () => {
-						return $store.setTab(TAB_WORK_RESULTS_KEY, []);
+						return enqueueWorkResultWrite(() => $store.setTab(TAB_WORK_RESULTS_KEY, []));
 					},
-					getResults(): Promise<SimplifyWorkResult[]> | undefined {
-						return $store.getTab(TAB_WORK_RESULTS_KEY) || undefined;
+					getResults(): Promise<SimplifyWorkResult[]> {
+						return workResultWrites.then(async () => (await $store.getTab(TAB_WORK_RESULTS_KEY)) || []);
 					},
 					/**
 					 * 开始新答题前初始化：清空搜索结果并重置内部状态
@@ -1397,9 +1546,11 @@ export const CommonProject = Project.create({
 						container.style.width = '400px';
 						/** 记录滚动高度 */
 						let scrollPercent = 0;
+						let questionRetryBusy = false;
 
 						/** 列表 */
 						const list = $ui.tooltip(h('div', { className: 'work-result-list' }));
+						let automaticProcessingDone = false;
 
 						list.onscroll = () => {
 							scrollPercent = list.scrollTop / list.scrollHeight;
@@ -1440,7 +1591,7 @@ export const CommonProject = Project.create({
 
 							if (results?.length) {
 								// 首次渲染移除全部实时状态
-								if (first) {
+								if (first && !state.workResult.isWorkerWorking) {
 									results = results.map((r) => {
 										r.searching = false;
 										return r;
@@ -1449,6 +1600,8 @@ export const CommonProject = Project.create({
 
 								// 进度统计：从结果数组派生，与序号状态严格一致
 								const stats = count(results);
+								questionRetryBusy = results.some((result) => result.retrying);
+								automaticProcessingDone = results.every((result) => result.resolved) && !questionRetryBusy;
 
 								// 如果序号指向的结果为空，则代表已经被清空，则重新让index变成0
 								if (results[this.cfg.currentResultIndex] === undefined) {
@@ -1461,7 +1614,9 @@ export const CommonProject = Project.create({
 								/** 基础提示信息 */
 								const baseInfos = [
 									`已搜题: ${stats.requested}/${stats.total}`,
-									`已答题: ${stats.resolved}/${stats.total}`,
+									`已处理: ${stats.resolved}/${stats.total}`,
+									`已填写/已确认: ${stats.finished}/${stats.total}`,
+									`待人工: ${stats.review} 题`,
 									'⚪ 白色序号：等待处理中',
 									'🔵 蓝边序号：已完成搜索',
 									'🔵 蓝色序号：已搜索已答题',
@@ -1508,7 +1663,44 @@ export const CommonProject = Project.create({
 								// 初始显示指定序号的结果
 								resultContainer.replaceChildren(createResult(results[this.cfg.currentResultIndex]));
 
-								container.replaceChildren(list, resultContainer);
+								const overview = h(
+									'div',
+									{
+										className: 'ai-work-result-overview',
+										style: {
+											display: 'flex',
+											alignItems: 'center',
+											justifyContent: 'space-between',
+											flexWrap: 'wrap',
+											gap: '8px',
+											padding: '9px 0',
+											font: '13px/1.6 system-ui,sans-serif'
+										}
+									},
+									[
+										h(
+											'span',
+											`已处理 ${stats.resolved}/${stats.total} · 已填写/确认 ${stats.finished} · 待人工 ${stats.review}`
+										)
+									]
+								);
+								if (stats.review) {
+									const nextReview = h(
+										'button',
+										{ type: 'button', className: 'base-style-button-secondary' },
+										'下一道待人工'
+									);
+									nextReview.onclick = () => {
+										const indices = results!.flatMap((result, index) =>
+											result.searchInfos.some((info) => info.ensemble?.status === 'review') ? [index] : []
+										);
+										this.cfg.currentResultIndex =
+											indices.find((index) => index > this.cfg.currentResultIndex) ?? indices[0];
+										render(false);
+									};
+									overview.append(nextReview);
+								}
+								container.replaceChildren(overview, list, resultContainer);
 
 								/** 恢复高度 */
 								list.scrollTo({
@@ -1553,13 +1745,31 @@ export const CommonProject = Project.create({
 						/** 渲染结果列表 */
 						const createResult = (result: SimplifyWorkResult | undefined) => {
 							if (result) {
+								const reviewResult = automaticProcessingDone
+									? result
+									: {
+											...result,
+											reviewActions: {
+												...result.reviewActions,
+												adopt: undefined,
+												retry: undefined,
+												unsupportedReason: '其余题目仍在处理；全部处理完成后，可采用候选或重新请求本题。'
+											}
+									  };
 								return h('div', [
 									createSearchResultAlertElement(result),
 									h(SearchInfosElement, {
 										infos: result.searchInfos,
 										question: result.question,
-										type: result.type
-									})
+										type: result.type,
+										reviewActions: reviewResult.reviewActions?.adopt
+											? {
+													adopt: (answers: string[]) => requestReviewAction(reviewResult.reviewActions!.adopt!, answers)
+											  }
+											: undefined
+									}),
+									createQuestionRetryControl(result, state.workResult.isWorkerWorking || questionRetryBusy),
+									createManualReviewControl(reviewResult)
 								]);
 							} else {
 								return h('div', 'undefined');
@@ -1591,10 +1801,23 @@ export const CommonProject = Project.create({
 						working_msg = undefined;
 					}
 				});
-				CommonProject.scripts.workResults.on('work-current-result-change', (cur) => {
+				CommonProject.scripts.workResults.on('work-current-result-change', async (cur) => {
 					if (cur.searching) {
 						if (working_msg)
 							working_msg.innerHTML = loadingSpinSvg + ` 正在搜题 ${formatQuestionForMessage(cur.question)}`;
+					} else if (cur.resolved && cur.searchInfos.some((info) => info.ensemble)) {
+						const results = await CommonProject.scripts.workResults.methods.getResults();
+						const pending =
+							results?.filter((result) => result.searchInfos.some((info) => info.ensemble?.status === 'review'))
+								.length || 0;
+						if (
+							working_msg &&
+							state.workResult.isWorkerWorking &&
+							pending &&
+							results?.every((result) => result.resolved)
+						) {
+							working_msg.textContent = `等待人工评判（${pending} 题）：请在原题处理后逐题确认。`;
+						}
 					}
 				});
 			}
@@ -1752,6 +1975,7 @@ export const CommonProject = Project.create({
 											homepage: info.homepage,
 											name: info.name,
 											ai: info.ai,
+											ensemble: info.ensemble,
 											error: info.error
 										})),
 										question: value
@@ -1979,6 +2203,8 @@ function createSearchResultAlertElement(result: SimplifyWorkResult) {
 	let err = result.error || result.searchInfos.find((i) => i.error)?.error;
 	if (result.requested === false && result.resolved === false) {
 		info = h('div', { className: 'result-info unresolved' }, '等待搜索中... 🔍');
+	} else if (result.searchInfos.some((info) => info.ensemble?.status === 'review')) {
+		info = h('div', { className: 'result-info warn' }, '等待人工评判：可展开比较候选并采用，或在原题处理后确认。');
 	} else if (err) {
 		let href = '';
 		if (err?.includes('is not valid JSON')) {

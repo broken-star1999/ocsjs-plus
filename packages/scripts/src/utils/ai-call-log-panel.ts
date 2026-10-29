@@ -16,7 +16,16 @@ export function openAICallLog() {
 	);
 	const render = () => {
 		const records = getAICallRecords();
-		summary.textContent = `共 ${records.length} 条 · 等待中 ${records.filter((r) => r.status === 'pending').length}`;
+		const knownUsage = records.filter((record) => record.usage);
+		const tokens = knownUsage.reduce(
+			(sum, record) => sum + (record.usage?.total ?? (record.usage?.input || 0) + (record.usage?.output || 0)),
+			0
+		);
+		summary.textContent =
+			`最近 ${records.length} 条 · 请求中 ${records.filter((r) => r.status === 'pending').length}` +
+			` · 已返回 ${records.filter((r) => r.status === 'success').length}` +
+			` · 失败/无法确定 ${records.filter((r) => r.status === 'error' || r.status === 'uncertain').length}` +
+			(knownUsage.length ? ` · 已知用量合计 ${tokens} Token（${knownUsage.length} 条）` : ' · 尚无接口用量');
 		list.replaceChildren(
 			...records.map((record) => {
 				const status = { pending: '请求中', success: '已返回答案', uncertain: '无法确定', error: '失败' }[

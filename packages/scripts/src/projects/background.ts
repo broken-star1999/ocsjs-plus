@@ -1,6 +1,7 @@
 import { RemotePlaywright, request } from '@ocsjs/core';
 import type { SearchInformation, SimplifyWorkResult } from '@ocsjs/core';
 import { markdown } from '../utils/markdown';
+import { isAIQuestionCacheSource } from '../utils/question-cache';
 import {
 	$ui,
 	$gm,
@@ -263,6 +264,7 @@ export const BackgroundProject = Project.create({
 							...swr
 								.map((r) =>
 									r.searchInfos
+										.filter((info) => !isAIQuestionCacheSource(info))
 										.map((i) =>
 											i.results
 												.filter((res) => res[1])

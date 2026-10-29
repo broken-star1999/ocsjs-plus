@@ -14,7 +14,7 @@ export * from '@ocsjs/core';
 export { start, $elements, $store } from 'easy-us';
 /** 导出本包的核心脚本工程，开发者调试的时候使用 BackgroundProject 中的注入脚本，访问脚本 window 上下文 */
 export { BackgroundProject } from './projects/background';
-export { CommonProject } from './projects/common';
+export { CommonProject, CommonEvents } from './projects/common';
 export { ZHSProject } from './projects/zhs';
 export { CXProject } from './projects/cx';
 export { ZJYProject } from './projects/zjy';
@@ -24,6 +24,9 @@ export { YKTProject } from './projects/yuketang';
 export { RenderScript } from './render';
 export { logoSvg } from './utils/ui';
 export { PLUS_RELEASES_URL } from './utils/plus-update';
+export { createCXQuestionRetryAdapter } from './utils/cx-question-retry';
+export { registerQuestionRetry } from './utils/question-retry-control';
+export { simplifyWorkResult, createCommonAnswerer, extractTextWithImages } from './utils/work';
 export {
 	setAnswererConfigProvider,
 	getAnswererConfigProvider,

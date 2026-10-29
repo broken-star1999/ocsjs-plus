@@ -13,9 +13,10 @@ const html = `<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><title>OCS
 <p><button id="layout-example">五图长题示例</button></p>
 <p><button id="add-frame">加载测试子页面</button> <button id="child-call">发起子页面模拟请求</button></p>
 <p><button id="auto-results">生成自动搜题示例</button></p>
+<p><button id="retry-example">加载单题重做测试</button></p><section id="retry-questions"></section>
 <p>请求记录：</p><ol id="requests"></ol></main>
 <script>
-const values=new Map(), listeners=new Map(); let listenerId=0, tabData={}, fail=false;
+const values=new Map(), listeners=new Map(), retryCalls=new Map(); let listenerId=0, tabData={}, fail=false;
 if(location.search.includes('legacy=1')){
  values.set('common.settings.aiEndpoint','https://api.deepseek.com/v1');
  values.set('common.settings.aiModel','legacy-model');
@@ -29,11 +30,23 @@ window.unsafeWindow=window;
 window.GM_info={script:{name:'OCS Plus 网课助手',version:'${
 	require('../package.json').version
 }',namespace:'ocsjs-plus'},scriptHandler:'UI fixture'};
-if(location.search.includes('search=1')||location.search.includes('results=1')){
+if(location.search.includes('search=1')||location.search.includes('results=1')||location.search.includes('ensemble=1')){
  values.set('common.settings.aiProvidersMigrated',true);
  values.set('common.settings.imageOptimize',true);
  values.set('common.settings.aiProviders',[{id:'fixture',name:'DeepSeek（本地模拟）',preset:'deepseek',endpoint:'https://api.deepseek.com',timeoutSeconds:120,catalog:[],models:[{id:'fixture-vision',name:'模拟识图模型',enabled:true,vision:true,extraBody:{}}]}]);
  values.set('common.settings.aiSelectedModel',JSON.stringify(['fixture','fixture-vision']));
+}
+if(location.search.includes('ensemble=1')){
+ const sources=values.get('common.settings.aiProviders');sources[0].models.push(
+ {id:'fixture-second',name:'第二模拟模型',enabled:true,vision:true,extraBody:{}},
+ {id:'fixture-summary',name:'模拟总结模型',enabled:true,vision:true,extraBody:{}});
+ values.set('common.settings.aiAnswerMode','advanced');
+ values.set('common.settings.aiModelThreads',[{key:JSON.stringify(['fixture','fixture-vision']),threads:3},{key:JSON.stringify(['fixture','fixture-second']),threads:1}]);
+ values.set('common.settings.aiConfidenceEnabled',true);values.set('common.settings.aiConsensusThreshold',75);
+ values.set('common.settings.aiDecisionRule','confidence');values.set('common.settings.aiSummaryModel',JSON.stringify(['fixture','fixture-summary']));
+ values.set('common.settings.aiSubjectiveRule','selected');values.set('common.settings.aiSubjectiveModel',JSON.stringify(['fixture','fixture-vision']));
+ if(location.search.includes('review=1'))values.set('common.settings.aiConsensusThreshold',100);
+ if(location.search.includes('summary=1')){values.set('common.settings.aiConsensusThreshold',100);values.set('common.settings.aiSummaryEnabled',true);values.set('common.settings.aiDecisionRule','confidence-then-summary')}
 }
 const copy=value=>value===undefined?undefined:JSON.parse(JSON.stringify(value));
 window.GM_getValue=(k,d)=>copy(values.has(k)?values.get(k):d);
@@ -86,6 +99,8 @@ window.GM_xmlhttpRequest=opts=>{
   ]
  };
  const catalog=catalogs[endpoint.hostname]||[{id:'custom-demo-model',name:'自定义示例模型（模拟）',input_modalities:['text']}];
+ const responseDelay=location.search.includes('progress=1')&&opts.method==='POST'
+  ?(JSON.parse(opts.data).model==='fixture-second'?6000:800):100;
  const timer=setTimeout(()=>{
   if(endpoint.hostname==='api.github.com'){
    const mode=new URLSearchParams(location.search).get('updates')||'none';
@@ -104,15 +119,27 @@ window.GM_xmlhttpRequest=opts=>{
    const request=JSON.parse(opts.data);const parts=request.messages[1].content;
    const payload=JSON.parse(Array.isArray(parts)?parts[0].text:parts);
    record.textContent+=' · 图片 '+(Array.isArray(parts)?parts.filter(p=>p.type==='image_url').length:0)+' 张';
+   if(payload.blank_count!==undefined)record.textContent+=' · 网页填写位置 '+payload.blank_count+' 个';
    if(payload.question.includes('接口失败示例')){opts.onload({status:401,responseText:'Authentication failed'});return}
    const uncertain=payload.question.includes('不确定示例');
+   let answer=['2'];
+   if(payload.question.startsWith('单空位回归'))answer=payload.blank_count===1?['26']:['26','26'];
+   if(payload.question.startsWith('单题重做模拟')){
+    const count=retryCalls.get(payload.question)||0;retryCalls.set(payload.question,count+1);
+    answer=payload.question.includes('多选')?(count?['BD']:['AC']):payload.question.includes('判断')?(count?['错误']:['正确']):payload.question.includes('填空')?(count?['新甲','新乙']:['旧甲','旧乙']):(count?['D']:['A']);
+    if(location.search.includes('ensemble=1')){
+     const second=request.model==='fixture-second',summary=request.model==='fixture-summary';
+     answer=payload.question.includes('多选')?(summary?['AD']:second?['BD']:['AC']):payload.question.includes('判断')?(second||summary?['错误']:['正确']):payload.question.includes('填空')?['旧甲','旧乙']:(summary?['B']:second?['D']:['A']);
+    }
+   }
+   if(payload.model_reports)record.textContent+=' · 汇总 '+payload.model_reports.length+' 次回答及思考';
    opts.onload({status:200,responseText:JSON.stringify({usage:{prompt_tokens:128,completion_tokens:32,total_tokens:160},choices:[{finish_reason:'stop',message:{
     ...(!payload.question.includes('无思考字段')?{reasoning_content:new URLSearchParams(location.search).has('layout')
       ?('这是本地长文本布局验证，不代表真实模型输出。'+('long_formula_without_spaces_'.repeat(12))+'\\n').repeat(30)
       :'这是本地模拟的思考内容，用于验证显示效果，不代表真实模型输出。\\n题目为 1 + 1，模拟服务返回答案 2。'}:{}),
-    content:JSON.stringify({answers:uncertain?[]:['2'],uncertain})}}]})});
+    content:JSON.stringify({answers:uncertain?[]:answer,uncertain})}}]})});
   }
- },100);return{abort(){clearTimeout(timer);opts.onabort?.()}};
+ },responseDelay);return{abort(){clearTimeout(timer);opts.onabort?.()}};
 };
 </script><script src="/dist/index.js"></script><script>
 document.querySelector('#child-call').onclick=()=>OCS.searchAIAnswer({endpoint:'https://api.deepseek.com',model:'fixture-vision',vision:true,providerName:'子页面模拟'}, {title:'子页面测试题'},1000);
@@ -133,40 +160,76 @@ OCS.start({projects:[{name:'通用',scripts:{settings:OCS.CommonProject.scripts.
 		fs.readFileSync(path.join(root, 'dist/style.css'), 'utf8')
  )}],defaultPanelName:location.search.includes('updates=')?'background.update':location.search.includes('results=1')?'common.work-results':location.search.includes('search=1')?'common.online-search':'common.settings',title:'OCS Plus · 本地模拟预览'
 }});
+document.querySelector('#retry-example').onclick=async()=>{
+ const button=document.querySelector('#retry-example');button.disabled=true;retryCalls.clear();
+ const area=document.querySelector('#retry-questions');area.replaceChildren();
+ for(const [index,type] of ['single','multiple','judgement','completion','completion'].entries()){
+  const root=document.createElement('section');root.dataset.type=type;root.style='padding:12px;border:1px solid #ccc;margin:8px 0;background:white';
+  const title=document.createElement('h3');title.textContent=index===4?'单空位回归：要使 for i in range(___, -4, -2) 循环执行15次，i的初值应为____。':'单题重做模拟'+(index+1)+'：'+({single:'图片单选',multiple:'图片多选',judgement:'判断',completion:'填空'})[type];root.append(title);
+  for(let i=0;i<(index===4?1:type==='completion'||type==='judgement'?2:4);i++){
+   const wrap=document.createElement('div');wrap.setAttribute('aria-checked','false');
+   const option=document.createElement('div');option.className='retry-option';option.style='padding:6px;cursor:pointer';
+   if(type==='completion')option.innerHTML='<textarea aria-label="'+(index===4?'照片回归空位':'填空')+(i+1)+'"></textarea>';
+   else if(type==='judgement')option.textContent=i?'B. 错':'A. 对';
+   else option.innerHTML=String.fromCharCode(65+i)+'. <img width="60" height="30" src="/question.svg?option='+i+'">';
+   option.onclick=()=>{
+    const before=wrap.getAttribute('aria-checked')==='true';
+    if(type!=='multiple')for(const other of root.querySelectorAll('[aria-checked]')){other.setAttribute('aria-checked','false');other.style.background=''}
+    wrap.setAttribute('aria-checked',String(!before||type!=='multiple'));wrap.style.background=wrap.getAttribute('aria-checked')==='true'?'#d6e4ff':'';
+   };
+   wrap.append(option);root.append(wrap);
+  }
+  area.append(root);
+ }
+ const results=OCS.CommonProject.scripts.workResults;await results.methods.init();results.cfg.currentResultIndex=0;
+ const worker=new OCS.OCSWorker({root:[...area.children],elements:{title:'h3',options:'.retry-option'},thread:1,
+  answerer:OCS.createCommonAnswerer({period:0,answererWrappers:OCS.CommonProject.scripts.settings.methods.getWorkOptions().answererWrappers,
+   titleTransform:elements=>OCS.extractTextWithImages(elements.title[0]),
+   optionsTransform:elements=>{const extracted=elements.options.map(el=>OCS.extractTextWithImages(el));return{text:extracted.map(item=>item.text).join('\\n'),images:extracted.flatMap(item=>item.images)}}}),
+  work:{type:ctx=>ctx.root.dataset.type,optionText:el=>el.textContent,handler:(type,answer,option)=>{if(type==='completion')option.querySelector('textarea').value=answer;else option.click()}},
+  onResultsInit:async(_,__,all)=>results.methods.fillAll(all.map(result=>OCS.simplifyWorkResult(result))),
+  onResultsUpdate:async(result,index)=>results.methods.update(index,OCS.simplifyWorkResult(result))
+ });
+ OCS.enableSingleQuestionRetry(worker,OCS.createCXQuestionRetryAdapter({layout:'exam',type:ctx=>ctx.root.dataset.type,optionText:el=>el.textContent}));
+ worker.on('start',()=>OCS.CommonEvents.emitWorkerStateChange('start'));worker.on('done',()=>OCS.CommonEvents.emitWorkerStateChange('done'));worker.on('close',()=>OCS.CommonEvents.emitWorkerStateChange('close'));
+ try{await worker.doWork();worker.emit('done')}finally{button.disabled=false}
+};
 </script><link rel="stylesheet" href="/dist/style.css"></html>`;
-http
-	.createServer((req, res) => {
-		if (new URL(req.url, 'http://127.0.0.1').pathname === '/question.svg') {
-			res.setHeader('Content-Type', 'image/svg+xml');
-			res.end(
-				'<svg xmlns="http://www.w3.org/2000/svg" width="140" height="70"><rect width="140" height="70" fill="white"/><circle cx="40" cy="35" r="20" fill="#4263eb"/><circle cx="100" cy="35" r="20" fill="#14b8a6"/></svg>'
-			);
-			return;
-		}
-		if (new URL(req.url, 'http://127.0.0.1').pathname === '/') {
-			res.setHeader('Content-Type', 'text/html; charset=utf-8');
-			res.end(html);
-			return;
-		}
-		const files = {
-			'/dist/ocs.user.js': ['dist/ocs.user.js', 'application/javascript'],
-			'/dist/index.js': ['dist/index.js', 'application/javascript'],
-			'/dist/style.css': ['dist/style.css', 'text/css']
-		};
-		const file = files[req.url];
-		if (!file) {
-			res.writeHead(404);
-			res.end();
-			return;
-		}
-		res.setHeader('Content-Type', file[1] + '; charset=utf-8');
-		fs.createReadStream(path.join(root, file[0]))
-			.on('error', () => {
-				res.statusCode = 404;
-				res.end('Run npm run build first');
-			})
-			.pipe(res);
-	})
-	.listen(4179, '127.0.0.1', () =>
-		console.log('AI settings fixture: http://127.0.0.1:4179 (simulated responses only)')
-	);
+module.exports = html;
+if (require.main === module)
+	http
+		.createServer((req, res) => {
+			if (new URL(req.url, 'http://127.0.0.1').pathname === '/question.svg') {
+				res.setHeader('Content-Type', 'image/svg+xml');
+				res.end(
+					'<svg xmlns="http://www.w3.org/2000/svg" width="140" height="70"><rect width="140" height="70" fill="white"/><circle cx="40" cy="35" r="20" fill="#4263eb"/><circle cx="100" cy="35" r="20" fill="#14b8a6"/></svg>'
+				);
+				return;
+			}
+			if (new URL(req.url, 'http://127.0.0.1').pathname === '/') {
+				res.setHeader('Content-Type', 'text/html; charset=utf-8');
+				res.end(html);
+				return;
+			}
+			const files = {
+				'/dist/ocs.user.js': ['dist/ocs.user.js', 'application/javascript'],
+				'/dist/index.js': ['dist/index.js', 'application/javascript'],
+				'/dist/style.css': ['dist/style.css', 'text/css']
+			};
+			const file = files[req.url];
+			if (!file) {
+				res.writeHead(404);
+				res.end();
+				return;
+			}
+			res.setHeader('Content-Type', file[1] + '; charset=utf-8');
+			fs.createReadStream(path.join(root, file[0]))
+				.on('error', () => {
+					res.statusCode = 404;
+					res.end('Run npm run build first');
+				})
+				.pipe(res);
+		})
+		.listen(Number(process.env.PORT || 4179), '127.0.0.1', () =>
+			console.log('AI settings fixture: http://127.0.0.1:' + (process.env.PORT || 4179) + ' (simulated responses only)')
+		);

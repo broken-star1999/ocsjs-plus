@@ -9,8 +9,13 @@ import {
 	splitAnswer,
 	domSearch,
 	domSearchAll,
-	SearchInformation
+	SearchInformation,
+	enableSingleQuestionRetry,
+	QuestionTypes
 } from '@ocsjs/core';
+import { createCXQuestionRetryAdapter } from '../utils/cx-question-retry';
+import { inspectAIWorkConfiguration } from '../utils/ai-work-status';
+import { readCXQuestionTypeCode } from '../utils/cx-question-type';
 import { crackFont, collectChars, decryptElements, extractFontFromStyle } from '../utils/font-decrypt';
 import { $modal, h, $store, MessageElement, Project, Script, $el, $gm, $$el, $ui, cors, $message } from 'easy-us';
 
@@ -906,8 +911,7 @@ function workOrExam(
 				return '';
 			},
 			optionsTransform: (elements, ctx) => {
-				const typeInput = elements.type?.[0] as HTMLInputElement;
-				const type = (typeInput ? getQuestionType(parseInt(typeInput.value)) : undefined) || 'unknown';
+				const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown';
 				ctx.type = type as any;
 				if (type === 'completion') return '';
 				const optResults = (ctx.elements.options ?? []).filter(Boolean).map((o: any) => extractTextWithImages(o));
@@ -925,9 +929,7 @@ function workOrExam(
 
 			// 在非预览模式下会出现多个干扰项 type，这里提取正确的
 
-			const type = getQuestionType(
-				parseInt(elements.type.find((t) => t.getAttribute('name')?.match(/type\d+/))?.getAttribute('value') || '-1')
-			);
+			const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[]));
 
 			if (type && (type === 'completion' || type === 'multiple' || type === 'judgement' || type === 'single')) {
 				const resolver = createDefaultQuestionResolver(ctx, (o) => extractTextWithImages(o).text)[type];
@@ -945,7 +947,7 @@ function workOrExam(
 							text.value = answer;
 						}
 						if (textareaFrame?.contentDocument) {
-							textareaFrame.contentDocument.body.innerHTML = answer;
+							textareaFrame.contentDocument.body.textContent = answer;
 						}
 						if (option?.parentElement?.parentElement) {
 							/** 如果存在保存按钮则点击 */
@@ -1028,6 +1030,19 @@ function workOrExam(
 	});
 
 	if (preview_mode) {
+		enableSingleQuestionRetry(
+			worker,
+			createCXQuestionRetryAdapter({
+				layout: 'exam',
+				type: (ctx) => {
+					const type = getQuestionType(readCXQuestionTypeCode(ctx.elements.type as HTMLInputElement[]));
+					return ['single', 'multiple', 'judgement', 'completion'].includes(type || '')
+						? (type as QuestionTypes)
+						: undefined;
+				},
+				optionText: (option) => extractTextWithImages(option).text
+			})
+		);
 		worker
 			.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug })
 			.then(() => {
@@ -1045,8 +1060,10 @@ function workOrExam(
 		(async () => {
 			while (next && worker.isClose === false) {
 				await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
+				if (worker.isClose) break;
 				$message.info({ content: '已完成，即将下一题', duration: 0 });
 				await $.sleep(3000);
+				if (worker.isClose) break;
 				next = getNextBtn();
 				next?.click();
 				await $.sleep(1000);
@@ -1133,7 +1150,7 @@ function mobilelearn(opts: CommonWorkOptions) {
 						text.value = answer;
 					}
 					if (textareaFrame?.contentDocument) {
-						textareaFrame.contentDocument.body.innerHTML = answer;
+						textareaFrame.contentDocument.body.textContent = answer;
 					}
 					if (option?.parentElement?.parentElement) {
 						/** 如果存在保存按钮则点击 */
@@ -1156,6 +1173,17 @@ function mobilelearn(opts: CommonWorkOptions) {
 		}
 	});
 
+	enableSingleQuestionRetry(
+		worker,
+		createCXQuestionRetryAdapter({
+			layout: 'practice',
+			type: (ctx) =>
+				typeof worker.opts.work === 'object' && typeof worker.opts.work.type === 'function'
+					? worker.opts.work.type(ctx)
+					: undefined,
+			optionText: (option) => extractTextWithImages(option).text
+		})
+	);
 	worker
 		.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug })
 		.then(() => {
@@ -1710,8 +1738,9 @@ function searchJob(opts: typeof CXProject.scripts.study.cfg, searchedJobs: Job[]
 								(work_type === 'not-job' && CommonProject.scripts.settings.cfg['work-when-no-job'])
 							) {
 								const workOptions = CommonProject.scripts.settings.methods.getWorkOptions();
-								if (workOptions.answererWrappers === undefined || workOptions.answererWrappers.length === 0) {
-									answerWrapperEmptyWarning(0);
+								const readiness = inspectAIWorkConfiguration(workOptions);
+								if (!readiness.ready) {
+									$message.warn({ content: readiness.error, duration: 0 });
 								} else {
 									func = () => {
 										$console.log(`开始答题 : ` + jobName);
@@ -1956,8 +1985,9 @@ const JobRunner = {
 			answerSeparators
 		}: CommonWorkOptions
 	) {
-		if (answererWrappers === undefined || answererWrappers.length === 0) {
-			return answerWrapperEmptyWarning(0);
+		const readiness = inspectAIWorkConfiguration({ answererWrappers: answererWrappers || [], thread });
+		if (!readiness.ready) {
+			return $message.warn({ content: readiness.error, duration: 0 });
 		}
 
 		// 章节测试未使用 commonWork，这里手动触发状态更新
@@ -2032,8 +2062,7 @@ const JobRunner = {
 			answerer: createCommonAnswerer({
 				titleTransform: (elements, ctx) => chapterTestTaskQuestionTitleTransform(elements.title),
 				optionsTransform: (elements, ctx) => {
-					const typeInput = elements.type?.[0] as HTMLInputElement;
-					const type = (typeInput ? getQuestionType(parseInt(typeInput.value)) : undefined) || 'unknown';
+					const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown';
 					ctx.type = type as any;
 					if (type === 'completion') return '';
 					const optResults = (ctx.elements.options ?? []).filter(Boolean).map((o: any) => extractTextWithImages(o));
@@ -2045,8 +2074,7 @@ const JobRunner = {
 
 			work: async (ctx) => {
 				const { elements, searchInfos } = ctx;
-				const typeInput = elements.type[0] as HTMLInputElement;
-				const type = typeInput ? getQuestionType(parseInt(typeInput.value)) : undefined;
+				const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[]));
 
 				if (type && (type === 'completion' || type === 'multiple' || type === 'judgement' || type === 'single')) {
 					const resolver = createDefaultQuestionResolver(ctx, (o) => extractTextWithImages(o).text)[type];
@@ -2070,7 +2098,7 @@ const JobRunner = {
 								text.value = answer;
 							}
 							if (textareaFrame?.contentDocument) {
-								textareaFrame.contentDocument.body.innerHTML = answer;
+								textareaFrame.contentDocument.body.textContent = answer;
 							}
 							if (option?.parentElement?.parentElement) {
 								/** 如果存在保存按钮则点击 */
@@ -2132,11 +2160,14 @@ const JobRunner = {
 				);
 
 				// 没有完成时随机作答
-				if (curr.result?.finish === false && curr.resolved === true) {
+				if (
+					curr.result?.finish === false &&
+					curr.resolved === true &&
+					!curr.ctx?.searchInfos.some((info) => info.ensemble)
+				) {
 					const options = curr.ctx?.elements?.options || [];
 
-					const typeInput = curr.ctx?.elements?.type[0] as HTMLInputElement | undefined;
-					const type = typeInput ? getQuestionType(parseInt(typeInput.value)) : undefined;
+					const type = getQuestionType(readCXQuestionTypeCode(curr.ctx?.elements?.type as HTMLInputElement[]));
 
 					const commonSetting = CommonProject.scripts.settings.cfg;
 
@@ -2176,8 +2207,7 @@ const JobRunner = {
 				}
 			},
 			async onElementSearched(elements) {
-				const typeInput = elements.type[0] as HTMLInputElement;
-				const type = typeInput ? getQuestionType(parseInt(typeInput.value)) : undefined;
+				const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[]));
 
 				/** 判断题转换成文字，以便于答题程序判断 */
 				if (type === 'judgement') {

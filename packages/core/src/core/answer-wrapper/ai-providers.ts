@@ -1,4 +1,6 @@
 import { AIAnswererConfig, AIModel, normalizeAIEndpoint, validateAIExtraBody } from './ai';
+import type { AnswererWrapper } from './interface';
+import type { AIEnsembleRule, AISubjectiveRule } from './ai-ensemble';
 
 export interface AIConfiguredModel extends AIModel {
 	enabled: boolean;
@@ -21,6 +23,95 @@ export interface AIProviderSource {
 export interface AIProviderState {
 	sources: AIProviderSource[];
 	selection: string;
+}
+
+export interface AIModelThreads {
+	key: string;
+	threads: number;
+}
+
+export function createAIAnswererWrappers(
+	state: AIProviderState,
+	ensembleEnabled = false,
+	assignments: AIModelThreads[] = [],
+	options: {
+		threshold?: number;
+		confidenceEnabled?: boolean;
+		summaryEnabled?: boolean;
+		summarySelection?: string;
+		rule?: AIEnsembleRule;
+		subjectiveRule?: AISubjectiveRule;
+		subjectiveSelection?: string;
+	} = {}
+): AnswererWrapper[] {
+	const base = {
+		name: '多模型联合答题',
+		url: '',
+		method: 'post' as const,
+		type: 'GM_xmlhttpRequest' as const,
+		headers: {},
+		handler: ''
+	};
+	if (!ensembleEnabled) {
+		const ai = resolveAISelection(state);
+		return ai ? [{ ...base, name: 'AI · ' + ai.model, url: ai.endpoint, ai }] : [];
+	}
+	const models: AIAnswererConfig[] = [];
+	let subjectiveModelIndex = -1;
+	let error: string | undefined;
+	const keys = new Set<string>();
+	for (const assignment of assignments) {
+		const ai = resolveAISelection({ ...state, selection: assignment.key });
+		if (keys.has(assignment.key)) error = '同一个模型只能配置一行，请使用该行的并发数。';
+		keys.add(assignment.key);
+		if (!ai) error = '高级模式中存在已删除或停用的模型，请重新选择。';
+		if (!Number.isInteger(assignment.threads) || assignment.threads < 1 || assignment.threads > 8) {
+			error = '每个模型的同题并发数须为 1–8 的整数。';
+		} else if (ai)
+			for (let i = 0; i < assignment.threads; i++) {
+				if (assignment.key === options.subjectiveSelection && i === 0) subjectiveModelIndex = models.length;
+				models.push({ ...ai });
+			}
+	}
+	if (!error && models.length < 2) error = '高级模式请至少配置两次作答：可选择多个模型，或增加单模型同题并发数。';
+	const rule =
+		options.rule ||
+		(options.summaryEnabled
+			? options.confidenceEnabled === false
+				? 'summary'
+				: 'confidence-then-summary'
+			: options.confidenceEnabled === false
+			? 'manual'
+			: 'confidence');
+	const objectiveError =
+		(rule === 'unanimous' || rule.includes('confidence')) && options.confidenceEnabled === false
+			? '当前决策规则需要启用置信度选择。'
+			: undefined;
+	const needsSummary = rule.includes('summary') || options.subjectiveRule === 'summary';
+	let summaryError =
+		needsSummary && !options.summaryEnabled ? '当前客观题或主观题处理方式需要启用总结模型。' : undefined;
+	const summary =
+		options.summaryEnabled && needsSummary
+			? resolveAISelection({ ...state, selection: options.summarySelection || '' })
+			: undefined;
+	if (options.summaryEnabled && needsSummary && !summary) summaryError = '请选择一个已启用的总结模型。';
+	return [
+		{
+			...base,
+			aiEnsemble: {
+				models: error ? [] : models,
+				error,
+				objectiveError,
+				summaryError,
+				repeat: true,
+				threshold: options.threshold ?? 100,
+				summary,
+				rule,
+				subjectiveRule: options.subjectiveRule,
+				subjectiveModelIndex
+			}
+		}
+	];
 }
 
 export function aiModelKey(sourceId: string, modelId: string): string {

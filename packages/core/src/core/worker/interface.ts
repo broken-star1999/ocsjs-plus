@@ -37,6 +37,16 @@ export interface WorkContext<E> {
 	type: QuestionTypes;
 	/** 答案分隔符 */
 	answerSeparators?: string[];
+	/** 单题重做时绕过答案缓存，重新查询；不改变原任务配置。 */
+	forceSearch?: boolean;
+	/** 查题器可延长等待截止时间，例如基础模型回答后再顺序调用总结模型。 */
+	searchDeadline?: number;
+	/** Local cancellation guard for platform resolvers; omitted from stored result summaries. */
+	isClosed?: () => boolean;
+	/** Pause before each page write; rejects if the owning task closes while waiting. */
+	waitUntilActive?: () => Promise<void>;
+	/** Local, ordered progress sink. Never serialized with question/result data. */
+	onSearchProgress?: (infos: SearchInformation[]) => Promise<void>;
 }
 
 /** 答案题目处理器结果 */
@@ -47,6 +57,14 @@ export interface ResolverResult {
 
 /** 答题结果 */
 export interface WorkResult<E extends RawElements> {
+	confirmReview?: (() => Promise<void>) & { complete?: () => void; pending?: () => boolean };
+	/** Explicitly adopt a current model candidate through the platform's validated replacement adapter. */
+	applyReviewAnswer?: (answers: string[]) => Promise<void>;
+	/** Scroll to the live question in its owning frame. */
+	locateQuestion?: () => Promise<void>;
+	/** 仅在当前页面内有效，不可直接序列化。由已适配的平台提供。 */
+	retry?: () => Promise<void>;
+	retrying?: boolean;
 	/** 查题完毕 */
 	requested: boolean;
 	/** 正在搜题中（查题线程已启动但尚未返回，供结果面板显示等待动画） */
@@ -64,6 +82,18 @@ export interface WorkResult<E extends RawElements> {
  * 为什么不直接用 {@link WorkResult} ，因为对象里太多嵌套对象，一旦结果超过10个以上，可能导致 I/O 变慢，并且页面卡顿。
  */
 export interface SimplifyWorkResult {
+	/** Local callback, removed by the scripts layer before storing results. */
+	_confirmReview?: () => Promise<void>;
+	reviewControl?: { id: string; frame: string };
+	reviewActions?: {
+		adopt?: { id: string; frame: string };
+		retry?: { id: string; frame: string };
+		locate?: { id: string; frame: string };
+		unsupportedReason?: string;
+	};
+	/** 单题重做的页面会话地址，不包含 DOM、密钥或函数。 */
+	retry?: { id: string; frame: string };
+	retrying?: boolean;
 	/** 题目 */
 	question: string;
 	/** 题目类型 */
@@ -80,6 +110,7 @@ export interface SimplifyWorkResult {
 	resolved: boolean;
 	/** 查题信息 */
 	searchInfos: {
+		ensemble?: SearchInformation['ensemble'];
 		ai?: SearchInformation['ai'];
 		/** 题目名 */
 		name: SearchInformation['name'];

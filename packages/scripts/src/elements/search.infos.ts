@@ -4,36 +4,13 @@ import { createQuestionTitleExtra } from '../utils';
 import { createAccordionCard } from '../utils/ui';
 import DOMPurify from 'dompurify';
 import { createAICallDetails } from './ai-call-details';
-
-/**
- * 图片链接正则
- * 含 query string 与 fragment，避免 URL 被截断（如带 ?response-content-disposition=... 的鉴权链接）
- * 排除空白/引号/</CJK，避免跨越标签或吞掉相邻中文
- */
-const IMG_LINK_RE =
-	/https?:\/\/[^"'<\s一-鿿]+?\.(?:png|jpe?g|gif|bmp|webp|svg)(?:\?[^\s"'<>一-鿿]*)?(?:#[^\s"'<>一-鿿]*)?/g;
-
-/**
- * 判断是否有图片链接，如果有则使用 <img> 标签包裹，但如果已经被 <img> 包裹则不处理
- */
-const transformImgLinkOfQuestion = (question: string) => {
-	const toImg = (text: string) => text.replace(IMG_LINK_RE, (img) => `<img src="${img}" />`);
-
-	// 纯文本（无 img 标签）直接替换链接：
-	// 走 DOM 序列化会把 & 转义成 &amp;（其中的分号会被答案分隔符 ';' 误切碎 img 标签），
-	// 且会额外引入 <head>/<body> 包裹标签
-	if (!/<img[\s>]/i.test(question)) {
-		return toImg(question);
-	}
-
-	// 防止题目中包含 img 标签元素，所以先统一把 img 标签替换成链接
-	const dom = new DOMParser().parseFromString(question, 'text/html');
-	for (const img of Array.from(dom.querySelectorAll('img'))) {
-		img.replaceWith(img.src);
-	}
-	// 最后将所有图片链接替换成 img 标签
-	return toImg(dom.documentElement.innerHTML);
-};
+import {
+	createAIEnsembleDetails,
+	createAIEnsembleSummary,
+	createAIAnswerCopyButton,
+	AIReviewActions
+} from './ai-ensemble-details';
+import { transformImgLinkOfQuestion } from '../utils/search-result-images';
 
 /**
  * 移除特殊字符、空格、换行，用于判断题库返回的题目是否和原题完全匹配
@@ -42,6 +19,20 @@ const transformImgLinkOfQuestion = (question: string) => {
  * 但属于同一道题、应折叠去重，因此先统一抹平协议前缀再剔除非字母数字字符。
  */
 const normalizeQuestion = (question: string) => question.replace(/https?:\/\//gi, '//').replace(/[^\p{L}\p{N}]/gu, '');
+
+// Progress rebuilds result elements. Retain disclosure choices without retaining
+// complete question text, image bytes or detached DOM in a long-lived session.
+const disclosureStates = new Map<string, boolean>();
+function disclosureKey(text: string) {
+	let hash = 2166136261;
+	for (let index = 0; index < text.length; index++) hash = Math.imul(hash ^ text.charCodeAt(index), 16777619);
+	return (hash >>> 0).toString(36) + ':' + text.length;
+}
+function rememberDisclosure(key: string, expanded: boolean) {
+	disclosureStates.delete(key);
+	disclosureStates.set(key, expanded);
+	if (disclosureStates.size > 200) disclosureStates.delete(disclosureStates.keys().next().value!);
+}
 
 /**
  * 搜索结果元素
@@ -53,6 +44,9 @@ export class SearchInfosElement extends HTMLElement {
 	question: string = '';
 
 	type: QuestionTypes;
+
+	/** Wired by the owning task; only an explicit candidate button invokes it. */
+	reviewActions?: AIReviewActions;
 
 	connectedCallback() {
 		const question = transformImgLinkOfQuestion(this.question || '无');
@@ -91,14 +85,18 @@ export class SearchInfosElement extends HTMLElement {
 		this.append(
 			...this.infos.map((info) => {
 				// 题库主页链接：点击跳转，不触发卡片展开/收起
-				const homeLink = $ui.tooltip(
-					h('a', { href: info.homepage, innerText: info.name, target: '_blank', title: '点击前往题库官网' })
-				);
-				homeLink.onclick = (e) => e.stopPropagation();
+				const homeLink = info.homepage
+					? $ui.tooltip(
+							h('a', { href: info.homepage, innerText: info.name, target: '_blank', title: '点击前往题库官网' })
+					  )
+					: h('span', { innerText: info.name });
+				if (info.homepage) homeLink.onclick = (e) => e.stopPropagation();
 
-				const isAI = !!info.ai || info.results.some((ans) => (ans[2] as { ai_native?: boolean })?.ai_native);
+				const isAI =
+					!!info.ai || !!info.ensemble || info.results.some((ans) => (ans[2] as { ai_native?: boolean })?.ai_native);
+				const repeatedReviewReason = info.ensemble?.status === 'review' && info.error === info.ensemble.reason;
 				const results = (
-					info.error
+					info.error && !repeatedReviewReason
 						? /** 显示错误信息 */
 						  [h('span', { className: 'error' }, [info.error || '网络错误或者未知错误'])]
 						: /** 显示结果列表 */
@@ -153,23 +151,75 @@ export class SearchInfosElement extends HTMLElement {
 									  )
 									: []),
 								...answer.map((a, index) =>
-									h('code', aiData?.ai_native ? { textContent: parts[index] } : { innerHTML: DOMPurify.sanitize(a) })
-								)
+									h(
+										'span',
+										{
+											style:
+												aiData?.ai_native && this.type === 'completion' ? { display: 'block', margin: '4px 0' } : {}
+										},
+										[
+											...(aiData?.ai_native && this.type === 'completion'
+												? [h('strong', { textContent: `第 ${index + 1} 空：` })]
+												: []),
+											h(
+												'code',
+												aiData?.ai_native ? { textContent: parts[index] } : { innerHTML: DOMPurify.sanitize(a) }
+											)
+										]
+									)
+								),
+								...(aiData?.ai_native ? [createAIAnswerCopyButton(parts)] : [])
 							])
 						]);
 					})
 				]);
 				// AI 答案/错误常驻，头部箭头只控制调用详情和思考内容。
-				return createAccordionCard({
+				const stateKey = disclosureKey(this.question + '\n' + info.name);
+				const card = createAccordionCard({
 					className: 'search-info-details' + (isAI ? ' ai-search-info' : ''),
-					expanded: true,
+					expanded: disclosureStates.get(stateKey) ?? !info.ensemble,
 					header: [
 						homeLink,
-						...(info.error ? [] : [h('span', { className: 'text-secondary' }, ` 共 ${info.results.length} 个结果`)])
+						...(info.error || (info.ensemble && !info.results.length)
+							? []
+							: [h('span', { className: 'text-secondary' }, ` 共 ${info.results.length} 个结果`)])
 					],
-					alwaysVisibleBody: isAI ? results : undefined,
-					body: isAI ? (info.ai ? [createAICallDetails(info.ai)] : []) : results
+					alwaysVisibleBody: isAI
+						? [...results, ...(info.ensemble ? [createAIEnsembleSummary(info.ensemble, this.type)] : [])]
+						: undefined,
+					body: info.ensemble
+						? [
+								createAIEnsembleDetails(info.ensemble, {
+									type: this.type,
+									reviewActions: this.reviewActions,
+									includeSummary: false
+								})
+						  ]
+						: isAI
+						? info.ai
+							? [createAICallDetails(info.ai)]
+							: []
+						: results
 				});
+				const header = card.querySelector<HTMLElement>('.accordion-card-header')!;
+				const toggle = header.onclick;
+				header.onclick = (event) => {
+					toggle?.call(header, event);
+					rememberDisclosure(stateKey, card.classList.contains('expanded'));
+				};
+				for (const detail of Array.from(card.querySelectorAll('details'))) {
+					const labels: string[] = [];
+					let current: HTMLElement | null = detail;
+					while (current && card.contains(current)) {
+						if (current.tagName.toLowerCase() === 'details')
+							labels.unshift(current.querySelector('summary')?.textContent || '');
+						current = current.parentElement;
+					}
+					const key = stateKey + ':' + disclosureKey(labels.join('\n'));
+					if (disclosureStates.has(key)) detail.open = disclosureStates.get(key)!;
+					detail.addEventListener('toggle', () => rememberDisclosure(key, detail.open));
+				}
+				return card;
 			})
 		);
 

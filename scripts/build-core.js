@@ -86,7 +86,7 @@ async function createUserJs() {
 					projectList,
 					'等网课的学习，作业。具体的功能请查看脚本悬浮窗中的教程页面。'
 				].join(' '),
-				author: 'enncy',
+				author: 'broken-star1999 (OCS Plus), enncy (OCS)',
 				license: 'MIT',
 				namespace: repositoryUrl,
 				homepage: repositoryUrl,
