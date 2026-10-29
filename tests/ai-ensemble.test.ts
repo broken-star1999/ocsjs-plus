@@ -227,7 +227,7 @@ async function main() {
 		assert.ok(createAIAnswererWrappers(state, true, [{ ...assignments[0], threads: 1 }])[0].aiEnsemble?.error);
 		assert.ok(createAIAnswererWrappers(state, true, [assignments[0], assignments[0]])[0].aiEnsemble?.error);
 		assert.ok(createAIAnswererWrappers({ ...state, sources: [] }, true, assignments)[0].aiEnsemble?.error);
-		assert.ok(createAIAnswererWrappers(state, true, assignments, { summaryEnabled: true })[0].aiEnsemble?.error);
+		assert.ok(createAIAnswererWrappers(state, true, assignments, { summaryEnabled: true })[0].aiEnsemble?.summaryError);
 	});
 	for (const [type, values, expected] of [
 		['single', ['b'], ['B']],
@@ -423,15 +423,15 @@ async function main() {
 	await test('disabled capability cannot be used by an active decision rule', () => {
 		assert.ok(
 			createAIAnswererWrappers(state, true, assignments, { rule: 'unanimous', confidenceEnabled: false })[0].aiEnsemble
-				?.error
+				?.objectiveError
 		);
 		assert.ok(
 			createAIAnswererWrappers(state, true, assignments, { rule: 'confidence', confidenceEnabled: false })[0].aiEnsemble
-				?.error
+				?.objectiveError
 		);
 		assert.ok(
 			createAIAnswererWrappers(state, true, assignments, { rule: 'summary', summaryEnabled: false })[0].aiEnsemble
-				?.error
+				?.summaryError
 		);
 	});
 	for (const rule of ['unexpected', 'toString', 'summary'] as const) {
@@ -498,7 +498,7 @@ async function main() {
 		assert.equal(f.root.querySelector('input')!.checked, true);
 		f.cleanup();
 	});
-	await test('pending human review disables retry and the running worker rejects direct retry', async () => {
+	await test('pending review uses its guarded retry action while the ordinary completed-task button stays disabled', async () => {
 		const f = await workerFixture(true, false, true);
 		assert.equal(f.worker.isRunning, true);
 		const button = createQuestionRetryControl(
@@ -510,7 +510,9 @@ async function main() {
 			false
 		).querySelector('button')!;
 		assert.equal(button.disabled, true);
-		await assert.rejects(f.result().retry, /等待当前/);
+		await assert.rejects(f.result().retry, /人工/);
+		assert.equal(f.worker.isRunning, true);
+		assert.equal(f.result().ctx.searchInfos[0].ensemble.status, 'review');
 		f.cleanup();
 		await f.task;
 	});
@@ -715,7 +717,7 @@ async function main() {
 		count.value = '3';
 		count.onchange!({} as Event);
 		assert.equal(value.assignments[0].threads, 3);
-		const threshold = root.querySelector<HTMLInputElement>('[aria-label="置信度阈值（一致率）"]')!;
+		const threshold = root.querySelector<HTMLInputElement>('[aria-label="一致率阈值"]')!;
 		threshold.value = '75';
 		threshold.onchange!({} as Event);
 		assert.equal(value.threshold, 75);
@@ -746,7 +748,7 @@ async function main() {
 				rule: 'manual'
 			};
 			const root = createAIConsensusSettings({ read: () => value, write: () => {}, observe: () => () => {} });
-			const rule = root.querySelector<HTMLSelectElement>('[aria-label="决策规则"]')!;
+			const rule = root.querySelector<HTMLSelectElement>('[aria-label="客观题决策方式"]')!;
 			assert.deepEqual(
 				[...rule.options].map((option) => option.value),
 				[...expected]
@@ -786,7 +788,7 @@ async function main() {
 			const input = root.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!;
 			input.checked = checked;
 			input.onchange!({} as Event);
-			const rule = root.querySelector<HTMLSelectElement>('[aria-label="决策规则"]')!;
+			const rule = root.querySelector<HTMLSelectElement>('[aria-label="客观题决策方式"]')!;
 			assert.equal(rule.value, value.rule);
 			assert.ok([...rule.options].some((option) => option.value === value.rule));
 		};
@@ -794,11 +796,11 @@ async function main() {
 		assert.equal(value.rule, 'confidence');
 		toggle('启用总结模型', true);
 		assert.equal(value.rule, 'confidence');
-		toggle('启用置信度选择', false);
+		toggle('启用一致率选择', false);
 		assert.equal(value.rule, 'summary');
 		toggle('启用总结模型', false);
 		assert.equal(value.rule, 'manual');
-		toggle('启用置信度选择', true);
+		toggle('启用一致率选择', true);
 		assert.equal(value.rule, 'manual');
 		root.remove();
 	});
@@ -848,17 +850,17 @@ async function main() {
 			update();
 			assert.equal(button.disabled, false);
 			button.click();
-			change('[aria-label="置信度阈值（一致率）"]', '75');
+			change('[aria-label="一致率阈值"]', '75');
 			assert.equal(value.threshold, 100);
 			click('取消');
 			assert.equal(value.threshold, 100);
 			button.click();
-			change('[aria-label="置信度阈值（一致率）"]', '75');
+			change('[aria-label="一致率阈值"]', '75');
 			click('保存高级设置');
 			assert.equal(value.threshold, 75);
 			assert.equal(popup!.isConnected, false);
 			button.click();
-			assert.equal(popup!.querySelector<HTMLInputElement>('[aria-label="置信度阈值（一致率）"]')!.value, '75');
+			assert.equal(popup!.querySelector<HTMLInputElement>('[aria-label="一致率阈值"]')!.value, '75');
 			change('input[type="number"]', '0');
 			click('保存高级设置');
 			assert.equal(popup!.isConnected, true);

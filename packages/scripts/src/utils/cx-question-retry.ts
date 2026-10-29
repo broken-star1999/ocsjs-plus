@@ -40,6 +40,7 @@ export function createCXQuestionRetryAdapter<E extends RawElements>(options: {
 		async apply(answers, ctx, assertCurrent) {
 			if (answers[0].type === 'completion') {
 				for (const { option, answer } of answers) {
+					await ctx.waitUntilActive?.();
 					assertCurrent();
 					const text = editor(option);
 					const body = editorBody(option);
@@ -64,6 +65,7 @@ export function createCXQuestionRetryAdapter<E extends RawElements>(options: {
 			const all = ctx.elements.options as HTMLElement[];
 			if (answers[0].type === 'multiple') {
 				for (const option of all) {
+					await ctx.waitUntilActive?.();
 					assertCurrent();
 					if (selected(option, options.layout) !== targets.has(option)) {
 						option.click();
@@ -72,12 +74,14 @@ export function createCXQuestionRetryAdapter<E extends RawElements>(options: {
 				}
 			} else {
 				const option = answers[0].option;
+				await ctx.waitUntilActive?.();
 				assertCurrent();
 				if (!selected(option, options.layout)) {
 					option.click();
 					await $.sleep(500);
 				}
 			}
+			await ctx.waitUntilActive?.();
 			assertCurrent();
 			if (all.some((option) => selected(option, options.layout) !== targets.has(option))) {
 				throw new Error('已获得新答案，但页面选中状态未同步成功，请检查本题。');

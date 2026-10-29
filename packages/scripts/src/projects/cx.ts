@@ -14,6 +14,7 @@ import {
 	QuestionTypes
 } from '@ocsjs/core';
 import { createCXQuestionRetryAdapter } from '../utils/cx-question-retry';
+import { inspectAIWorkConfiguration } from '../utils/ai-work-status';
 import { readCXQuestionTypeCode } from '../utils/cx-question-type';
 import { crackFont, collectChars, decryptElements, extractFontFromStyle } from '../utils/font-decrypt';
 import { $modal, h, $store, MessageElement, Project, Script, $el, $gm, $$el, $ui, cors, $message } from 'easy-us';
@@ -1737,8 +1738,9 @@ function searchJob(opts: typeof CXProject.scripts.study.cfg, searchedJobs: Job[]
 								(work_type === 'not-job' && CommonProject.scripts.settings.cfg['work-when-no-job'])
 							) {
 								const workOptions = CommonProject.scripts.settings.methods.getWorkOptions();
-								if (workOptions.answererWrappers === undefined || workOptions.answererWrappers.length === 0) {
-									answerWrapperEmptyWarning(0);
+								const readiness = inspectAIWorkConfiguration(workOptions);
+								if (!readiness.ready) {
+									$message.warn({ content: readiness.error, duration: 0 });
 								} else {
 									func = () => {
 										$console.log(`开始答题 : ` + jobName);
@@ -1983,8 +1985,9 @@ const JobRunner = {
 			answerSeparators
 		}: CommonWorkOptions
 	) {
-		if (answererWrappers === undefined || answererWrappers.length === 0) {
-			return answerWrapperEmptyWarning(0);
+		const readiness = inspectAIWorkConfiguration({ answererWrappers: answererWrappers || [], thread });
+		if (!readiness.ready) {
+			return $message.warn({ content: readiness.error, duration: 0 });
 		}
 
 		// 章节测试未使用 commonWork，这里手动触发状态更新

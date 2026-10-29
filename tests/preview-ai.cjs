@@ -44,6 +44,7 @@ if(location.search.includes('ensemble=1')){
  values.set('common.settings.aiModelThreads',[{key:JSON.stringify(['fixture','fixture-vision']),threads:3},{key:JSON.stringify(['fixture','fixture-second']),threads:1}]);
  values.set('common.settings.aiConfidenceEnabled',true);values.set('common.settings.aiConsensusThreshold',75);
  values.set('common.settings.aiDecisionRule','confidence');values.set('common.settings.aiSummaryModel',JSON.stringify(['fixture','fixture-summary']));
+ values.set('common.settings.aiSubjectiveRule','selected');values.set('common.settings.aiSubjectiveModel',JSON.stringify(['fixture','fixture-vision']));
  if(location.search.includes('review=1'))values.set('common.settings.aiConsensusThreshold',100);
  if(location.search.includes('summary=1')){values.set('common.settings.aiConsensusThreshold',100);values.set('common.settings.aiSummaryEnabled',true);values.set('common.settings.aiDecisionRule','confidence-then-summary')}
 }
@@ -98,6 +99,8 @@ window.GM_xmlhttpRequest=opts=>{
   ]
  };
  const catalog=catalogs[endpoint.hostname]||[{id:'custom-demo-model',name:'自定义示例模型（模拟）',input_modalities:['text']}];
+ const responseDelay=location.search.includes('progress=1')&&opts.method==='POST'
+  ?(JSON.parse(opts.data).model==='fixture-second'?6000:800):100;
  const timer=setTimeout(()=>{
   if(endpoint.hostname==='api.github.com'){
    const mode=new URLSearchParams(location.search).get('updates')||'none';
@@ -116,9 +119,11 @@ window.GM_xmlhttpRequest=opts=>{
    const request=JSON.parse(opts.data);const parts=request.messages[1].content;
    const payload=JSON.parse(Array.isArray(parts)?parts[0].text:parts);
    record.textContent+=' · 图片 '+(Array.isArray(parts)?parts.filter(p=>p.type==='image_url').length:0)+' 张';
+   if(payload.blank_count!==undefined)record.textContent+=' · 网页填写位置 '+payload.blank_count+' 个';
    if(payload.question.includes('接口失败示例')){opts.onload({status:401,responseText:'Authentication failed'});return}
    const uncertain=payload.question.includes('不确定示例');
    let answer=['2'];
+   if(payload.question.startsWith('单空位回归'))answer=payload.blank_count===1?['26']:['26','26'];
    if(payload.question.startsWith('单题重做模拟')){
     const count=retryCalls.get(payload.question)||0;retryCalls.set(payload.question,count+1);
     answer=payload.question.includes('多选')?(count?['BD']:['AC']):payload.question.includes('判断')?(count?['错误']:['正确']):payload.question.includes('填空')?(count?['新甲','新乙']:['旧甲','旧乙']):(count?['D']:['A']);
@@ -134,7 +139,7 @@ window.GM_xmlhttpRequest=opts=>{
       :'这是本地模拟的思考内容，用于验证显示效果，不代表真实模型输出。\\n题目为 1 + 1，模拟服务返回答案 2。'}:{}),
     content:JSON.stringify({answers:uncertain?[]:answer,uncertain})}}]})});
   }
- },100);return{abort(){clearTimeout(timer);opts.onabort?.()}};
+ },responseDelay);return{abort(){clearTimeout(timer);opts.onabort?.()}};
 };
 </script><script src="/dist/index.js"></script><script>
 document.querySelector('#child-call').onclick=()=>OCS.searchAIAnswer({endpoint:'https://api.deepseek.com',model:'fixture-vision',vision:true,providerName:'子页面模拟'}, {title:'子页面测试题'},1000);
@@ -158,13 +163,13 @@ OCS.start({projects:[{name:'通用',scripts:{settings:OCS.CommonProject.scripts.
 document.querySelector('#retry-example').onclick=async()=>{
  const button=document.querySelector('#retry-example');button.disabled=true;retryCalls.clear();
  const area=document.querySelector('#retry-questions');area.replaceChildren();
- for(const [index,type] of ['single','multiple','judgement','completion'].entries()){
+ for(const [index,type] of ['single','multiple','judgement','completion','completion'].entries()){
   const root=document.createElement('section');root.dataset.type=type;root.style='padding:12px;border:1px solid #ccc;margin:8px 0;background:white';
-  const title=document.createElement('h3');title.textContent='单题重做模拟'+(index+1)+'：'+({single:'图片单选',multiple:'图片多选',judgement:'判断',completion:'填空'})[type];root.append(title);
-  for(let i=0;i<(type==='completion'||type==='judgement'?2:4);i++){
+  const title=document.createElement('h3');title.textContent=index===4?'单空位回归：要使 for i in range(___, -4, -2) 循环执行15次，i的初值应为____。':'单题重做模拟'+(index+1)+'：'+({single:'图片单选',multiple:'图片多选',judgement:'判断',completion:'填空'})[type];root.append(title);
+  for(let i=0;i<(index===4?1:type==='completion'||type==='judgement'?2:4);i++){
    const wrap=document.createElement('div');wrap.setAttribute('aria-checked','false');
    const option=document.createElement('div');option.className='retry-option';option.style='padding:6px;cursor:pointer';
-   if(type==='completion')option.innerHTML='<textarea aria-label="填空'+(i+1)+'"></textarea>';
+   if(type==='completion')option.innerHTML='<textarea aria-label="'+(index===4?'照片回归空位':'填空')+(i+1)+'"></textarea>';
    else if(type==='judgement')option.textContent=i?'B. 错':'A. 对';
    else option.innerHTML=String.fromCharCode(65+i)+'. <img width="60" height="30" src="/question.svg?option='+i+'">';
    option.onclick=()=>{

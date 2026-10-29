@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { OCSWorker, CustomOCSWorker } from '../packages/core/src/core/worker/worker';
+import { AnswerWrapperHandlerConfig } from '../packages/core/src/core/answer-wrapper/answer.wrapper.handler';
 import { CommonProject } from '../packages/scripts/src/projects/common';
 import { BackgroundProject } from '../packages/scripts/src/projects/background';
 import { isAIQuestionCacheSource } from '../packages/scripts/src/utils/question-cache';
@@ -26,6 +27,14 @@ async function finishes(task: Promise<unknown>): Promise<boolean> {
 	}
 }
 
+function deferred() {
+	let release!: () => void;
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return { promise, resolve: release };
+}
+
 async function main() {
 	for (const [name, source] of [
 		['native metadata', { results: [['question', 'B', { ai_native: true, answers: ['B'] }]] }],
@@ -47,8 +56,8 @@ async function main() {
 				resolved: true,
 				searchInfos: [info]
 			};
-			const originalGet = $store.getTab,
-				originalSet = $store.setTab;
+			const originalGet = $store.getTab;
+			const originalSet = $store.setTab;
 			let tab: unknown[] = [];
 			$store.getTab = (async () => tab) as any;
 			$store.setTab = (async (_key: string, value: unknown[]) => {
@@ -80,13 +89,12 @@ async function main() {
 	});
 	for (const kind of ['default', 'custom'] as const)
 		await test('closing a paused worker releases it without querying or filling: ' + kind, async () => {
-			let queries = 0,
-				fills = 0;
+			let queries = 0;
+			let fills = 0;
 			const root = document.createElement('section');
 			root.innerHTML = '<h3>question</h3><label>A</label>';
 			document.body.append(root);
-			let worker: OCSWorker<any> | CustomOCSWorker;
-			worker =
+			const worker: OCSWorker<any> | CustomOCSWorker =
 				kind === 'default'
 					? new OCSWorker({
 							root: [root],
@@ -166,8 +174,8 @@ async function main() {
 	});
 	for (const asynchronous of [false, true])
 		await test('custom status callback closes before resolving, async=' + asynchronous, async () => {
-			let queries = 0,
-				fills = 0;
+			let queries = 0;
+			let fills = 0;
 			const worker = new CustomOCSWorker({
 				questions: () => [
 					{ text: 'first', type: 'single' },
@@ -202,8 +210,8 @@ async function main() {
 			await test(
 				'closing after the first fill blocks later writes and status updates: ' + type + '/native=' + native,
 				async () => {
-					let fills = 0,
-						lateUpdates = 0;
+					let fills = 0;
+					let lateUpdates = 0;
 					const root = document.createElement('section');
 					root.innerHTML = '<h3>question</h3><label>A. first</label><label>B. second</label>';
 					document.body.append(root);
@@ -248,8 +256,8 @@ async function main() {
 				}
 			);
 	await test('resuming without closing still queries and fills normally', async () => {
-		let queries = 0,
-			fills = 0;
+		let queries = 0;
+		let fills = 0;
 		const worker = new CustomOCSWorker({
 			questions: () => {
 				worker.emit('stop');
@@ -274,6 +282,333 @@ async function main() {
 			assert.equal(fills, 1);
 		} finally {
 			worker.emit('close');
+		}
+	});
+	for (const kind of ['default', 'custom'] as const)
+		for (const finishBy of ['continue', 'close'] as const)
+			await test('response arriving while paused cannot fill or finish: ' + kind + '/' + finishBy, async () => {
+				const started = deferred();
+				const response = deferred();
+				const root = document.createElement('section');
+				root.innerHTML = '<h3>question</h3><label>A. first</label><label>B. second</label>';
+				document.body.append(root);
+				let fills = 0;
+				let settled = false;
+				const answerer = async () => {
+					started.resolve();
+					await response.promise;
+					return [
+						{
+							name: 'AI',
+							results: [{ question: 'question', answer: 'B', extra_data: { ai_native: true, answers: ['B'] } }]
+						}
+					];
+				};
+				const worker =
+					kind === 'default'
+						? new OCSWorker({
+								root: [root],
+								elements: { title: 'h3', options: 'label' },
+								answerer,
+								work: {
+									type: 'single',
+									optionText: (option) => option.textContent || '',
+									handler: () => {
+										fills++;
+									}
+								}
+						  })
+						: new CustomOCSWorker({
+								questions: () => [{ text: 'question', type: 'single' }],
+								answerer,
+								resolver: async () => {
+									fills++;
+									return { finish: true };
+								},
+								period: 0
+						  });
+				const task = worker.doWork().then(() => {
+					settled = true;
+				});
+				try {
+					await started.promise;
+					worker.emit('stop');
+					response.resolve();
+					await delay(300);
+					assert.equal(fills, 0, 'paused response must not reach a page handler');
+					assert.equal(settled, false, 'last question must not complete while paused');
+					assert.equal(worker.isRunning, true);
+					worker.emit(finishBy === 'continue' ? 'continuate' : 'close');
+					assert.equal(await finishes(task), true);
+					assert.equal(fills, finishBy === 'continue' ? 1 : 0);
+					assert.equal(worker.isRunning, false);
+				} finally {
+					response.resolve();
+					worker.emit('close');
+					await task;
+					root.remove();
+				}
+			});
+	for (const kind of ['default', 'custom'] as const)
+		for (const finishBy of ['continue', 'close'] as const)
+			await test(
+				'pause from an asynchronous requested-status callback gates the resolver: ' + kind + '/' + finishBy,
+				async () => {
+					const paused = deferred();
+					const root = document.createElement('section');
+					root.innerHTML = '<h3>question</h3><label>A. first</label>';
+					document.body.append(root);
+					let fills = 0;
+					let settled = false;
+					const update = async (result: any) => {
+						if (result.requested && !result.resolved) {
+							await delay(20);
+							worker.emit('stop');
+							paused.resolve();
+						}
+					};
+					const worker: OCSWorker<any> | CustomOCSWorker =
+						kind === 'default'
+							? new OCSWorker({
+									root: [root],
+									elements: { title: 'h3', options: 'label' },
+									answerer: async () => [{ name: 'mock', results: [{ question: 'question', answer: 'A' }] }],
+									work: {
+										type: 'single',
+										optionText: (option) => option.textContent || '',
+										handler: () => {
+											fills++;
+										}
+									},
+									onResultsUpdate: update
+							  })
+							: new CustomOCSWorker({
+									questions: () => [{ text: 'question', type: 'single' }],
+									answerer: async () => [],
+									resolver: async () => {
+										fills++;
+										return { finish: true };
+									},
+									onResultsUpdate: update,
+									period: 0
+							  });
+					const task = worker.doWork().then(() => {
+						settled = true;
+					});
+					try {
+						await paused.promise;
+						await delay(300);
+						assert.equal(fills, 0);
+						assert.equal(settled, false);
+						worker.emit(finishBy === 'continue' ? 'continuate' : 'close');
+						assert.equal(await finishes(task), true);
+						assert.equal(fills, finishBy === 'continue' ? 1 : 0);
+					} finally {
+						worker.emit('close');
+						await task;
+						root.remove();
+					}
+				}
+			);
+	for (const type of ['multiple', 'completion'] as const)
+		for (const native of [false, true])
+			for (const finishBy of ['continue', 'close'] as const)
+				await test(
+					'pause between page writes keeps remaining choices/blanks untouched: ' +
+						type +
+						'/native=' +
+						native +
+						'/' +
+						finishBy,
+					async () => {
+						const paused = deferred();
+						const root = document.createElement('section');
+						root.innerHTML = '<h3>question</h3><label>A. first</label><label>B. second</label>';
+						document.body.append(root);
+						const answers = type === 'multiple' ? ['AB'] : ['one', 'two'];
+						const written: number[] = [];
+						let queries = 0;
+						let settled = false;
+						const worker = new OCSWorker({
+							root: [root],
+							elements: { title: 'h3', options: 'label' },
+							answerSeparators: ['#'],
+							answerer: async () => {
+								queries++;
+								return [
+									{
+										name: 'mock',
+										results: [
+											{
+												question: 'question',
+												answer: answers.join('#'),
+												extra_data: native ? { ai_native: true, answers } : {}
+											}
+										]
+									}
+								];
+							},
+							work: {
+								type,
+								optionText: (option) => option.textContent || '',
+								handler: async (_type, _answer, option, ctx) => {
+									written.push(ctx.elements.options!.indexOf(option));
+									if (written.length === 1) {
+										worker.emit('stop');
+										await delay(20);
+										paused.resolve();
+									}
+								}
+							}
+						});
+						const task = worker.doWork().then(() => {
+							settled = true;
+						});
+						try {
+							await paused.promise;
+							await delay(250);
+							assert.deepEqual(written, [0]);
+							assert.equal(settled, false);
+							worker.emit(finishBy === 'continue' ? 'continuate' : 'close');
+							assert.equal(await finishes(task), true);
+							assert.deepEqual(
+								written,
+								finishBy === 'continue' ? [0, 1] : [0],
+								'resume continues only the remaining writes'
+							);
+							assert.equal(queries, 1, 'resume must not re-query or restart the question');
+						} finally {
+							worker.emit('close');
+							await task;
+							root.remove();
+						}
+					}
+				);
+	for (const kind of ['default', 'custom'] as const)
+		await test('pausing in the last resolved-status callback prevents task completion: ' + kind, async () => {
+			const paused = deferred();
+			const root = document.createElement('section');
+			root.innerHTML = '<h3>question</h3><label>A. first</label>';
+			document.body.append(root);
+			let settled = false;
+			const update = async (result: any) => {
+				if (result.resolved) {
+					await delay(20);
+					worker.emit('stop');
+					paused.resolve();
+				}
+			};
+			const worker: OCSWorker<any> | CustomOCSWorker =
+				kind === 'default'
+					? new OCSWorker({
+							root: [root],
+							elements: { title: 'h3', options: 'label' },
+							answerer: async () => [{ name: 'mock', results: [{ question: 'question', answer: 'A' }] }],
+							work: { type: 'single', optionText: (option) => option.textContent || '', handler: () => {} },
+							onResultsUpdate: update
+					  })
+					: new CustomOCSWorker({
+							questions: () => [{ text: 'question', type: 'single' }],
+							answerer: async () => [],
+							resolver: async () => ({ finish: true }),
+							onResultsUpdate: update,
+							period: 0
+					  });
+			const task = worker.doWork().then(() => {
+				settled = true;
+			});
+			try {
+				await paused.promise;
+				await delay(250);
+				assert.equal(settled, false);
+				assert.equal(worker.isRunning, true);
+				worker.emit('continuate');
+				assert.equal(await finishes(task), true);
+			} finally {
+				worker.emit('close');
+				await task;
+				root.remove();
+			}
+		});
+	await test('pausing during the asynchronous searching status prevents the request until resumed', async () => {
+		const paused = deferred();
+		const root = document.createElement('section');
+		root.innerHTML = '<h3>question</h3><label>A. first</label>';
+		document.body.append(root);
+		let queries = 0;
+		const worker = new OCSWorker({
+			root: [root],
+			elements: { title: 'h3', options: 'label' },
+			answerer: async () => {
+				queries++;
+				return [];
+			},
+			work: { type: 'single', handler: () => {} },
+			onResultsUpdate: async (result) => {
+				if (result.searching) {
+					await delay(20);
+					worker.emit('stop');
+					paused.resolve();
+				}
+			}
+		});
+		const task = worker.doWork();
+		try {
+			await paused.promise;
+			await delay(250);
+			assert.equal(queries, 0);
+			worker.emit('continuate');
+			assert.equal(await finishes(task), true);
+			assert.equal(queries, 1);
+		} finally {
+			worker.emit('close');
+			await task;
+			root.remove();
+		}
+	});
+	await test('a long pause before querying does not exhaust the resolver wait window', async () => {
+		const beforeTimeout = AnswerWrapperHandlerConfig.timeout_seconds;
+		// Keep a 200ms ordinary grace window so this test can pause beyond it.
+		AnswerWrapperHandlerConfig.timeout_seconds = -9.8;
+		const paused = deferred();
+		const root = document.createElement('section');
+		root.innerHTML = '<h3>question</h3><label>A. first</label>';
+		document.body.append(root);
+		let fills = 0;
+		const worker = new OCSWorker({
+			root: [root],
+			elements: { title: 'h3', options: 'label' },
+			answerer: async () => {
+				await delay(60);
+				return [{ name: 'mock', results: [{ question: 'question', answer: 'A' }] }];
+			},
+			work: {
+				type: 'single',
+				optionText: (option) => option.textContent || '',
+				handler: () => {
+					fills++;
+				}
+			},
+			onResultsUpdate: async (result) => {
+				if (result.searching) {
+					worker.emit('stop');
+					paused.resolve();
+				}
+			}
+		});
+		const task = worker.doWork();
+		try {
+			await paused.promise;
+			await delay(500);
+			assert.equal(fills, 0);
+			worker.emit('continuate');
+			assert.equal(await finishes(task), true);
+			assert.equal(fills, 1, 'resume must still wait for and apply the fresh response');
+		} finally {
+			worker.emit('close');
+			await task;
+			root.remove();
+			AnswerWrapperHandlerConfig.timeout_seconds = beforeTimeout;
 		}
 	});
 	console.log(`Work safety: ${checks} scenarios passed.`);

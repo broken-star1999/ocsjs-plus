@@ -13,7 +13,8 @@ import { CommonEvents, CommonProject } from '../projects/common';
 import { $console, BackgroundProject } from '../projects/background';
 import { CommonWorkOptions } from '.';
 import { createIframeControlSession } from './iframe-control-bar';
-import { registerQuestionRetry, registerManualReview } from './question-retry-control';
+import { registerQuestionRetry, registerManualReview, registerReviewActions } from './question-retry-control';
+import { inspectAIWorkConfiguration } from './ai-work-status';
 import {
 	buildAnswererEnv,
 	createAnswererWrappersSignature,
@@ -179,12 +180,20 @@ export function commonWork(options: {
 
 	/** 渲染面板内容（render 事件与 start() 共用，保证两处内容一致） */
 	const renderPanelBody = () => {
-		const gotoSettingsBtn = $ui.button('👉 前往设置题库配置', {
+		const gotoSettingsBtn = $ui.button('前往检查答题配置', {
 			className: 'base-style-button',
 			style: { flex: '1', padding: '4px' }
 		});
 		gotoSettingsBtn.onclick = () => {
 			BackgroundProject.scripts.render.methods.pin(CommonProject.scripts.settings);
+		};
+		const recheckBtn = $ui.button('重新检查并开始', {
+			className: 'base-style-button-secondary',
+			style: { flex: '1', padding: '6px' }
+		});
+		recheckBtn.onclick = () => {
+			state.startBtnPressed = true;
+			start();
 		};
 
 		// 搜索结果区域复用：仅当被框架重建（detached）后才新建，
@@ -199,7 +208,10 @@ export function commonWork(options: {
 				{ style: { marginTop: '12px' } },
 
 				state.checkFailed
-					? [h('hr'), h('div', { style: { display: 'flex' } }, [gotoSettingsBtn])]
+					? [
+							h('hr'),
+							h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, [gotoSettingsBtn, recheckBtn])
+					  ]
 					: [
 							h('hr'),
 							// 控制面板始终渲染：未开始时为"开始答题"按钮；
@@ -220,9 +232,9 @@ export function commonWork(options: {
 	if (iframeControl) {
 		// 子 iframe 操控模式：$message 经 cors 转发到顶层时无法执行交互回调（取消/倒计时结束），
 		// 不能使用交互式预检；但自动答题必须触发，简化为直接校验题库配置 + 延迟自动开始
-		if (workOptions.answererWrappers.length === 0) {
+		if (!inspectAIWorkConfiguration(workOptions).ready) {
 			state.checkFailed = true;
-			answerWrapperEmptyWarning(0);
+			$message.warn({ content: inspectAIWorkConfiguration(workOptions).error, duration: 0 });
 		} else {
 			const delay = options.start_delay_seconds ?? 5;
 			$message.info(`将在 ${delay} 秒后自动答题`);
@@ -253,11 +265,15 @@ export function commonWork(options: {
 		if (state.running) {
 			return;
 		}
-		if (state.checkFailed) {
-			return answerWrapperEmptyWarning(0);
-		}
 		// 重新获取题库配置（防止题库变化事件触发后无法获取到最新题库配置）
 		workOptions = CommonProject.scripts.settings.methods.getWorkOptions();
+		const readiness = inspectAIWorkConfiguration(workOptions);
+		if (!readiness.ready) {
+			state.checkFailed = true;
+			renderPanelBody();
+			return $message.warn({ content: readiness.error, duration: 0 });
+		}
+		state.checkFailed = false;
 		await options.beforeRunning?.();
 		state.running = true;
 		// 运行答题
@@ -427,6 +443,7 @@ export function simplifyWorkResult(
 		'';
 	return {
 		reviewControl: wr.confirmReview ? registerManualReview(wr, wr.confirmReview) : undefined,
+		reviewActions: registerReviewActions(wr),
 		retry: registerQuestionRetry(wr),
 		retrying: wr.retrying,
 		requested: wr.requested,
@@ -530,7 +547,9 @@ export function createCommonAnswerer(options: {
 				...ensembles.map(
 					(config) =>
 						Math.max(0, ...config.models.map(timeout)) +
-						(config.rule?.includes('summary') && config.summary ? timeout(config.summary) : 0)
+						((config.rule?.includes('summary') || config.subjectiveRule === 'summary') && config.summary
+							? timeout(config.summary)
+							: 0)
 				)
 			);
 			// 图片准备、搜题间隔和顺序总结都必须在解析器的等待窗口内。
@@ -586,6 +605,11 @@ export function createCommonAnswerer(options: {
 					duration: 10
 				});
 			}
+			if (ctx.type === 'completion') env.blank_count = (ctx.elements.options || []).filter(Boolean).length;
+			if (['single', 'multiple', 'judgement'].includes(ctx.type || '')) {
+				env.option_count = (ctx.elements.options || []).filter(Boolean).length;
+			}
+			if (ctx.onSearchProgress) env.onProgress = (info: SearchInformation) => ctx.onSearchProgress!([info]);
 			const searchInfos = await defaultAnswerWrapperHandler(options.answererWrappers, env);
 			// 将 AI 答案中的 [图片N] 占位符还原为对应图片 URL，使选项匹配可以命中图片选项。
 			// imageUrls 与实际上传的 env.images 严格同序（createImageSuggestion 单一数据源，含转换失败过滤）。
@@ -632,9 +656,10 @@ function workPreCheckMessage(
 ) {
 	const { onrun, onNoAnswererWrappers, onclose, ...opts } = options;
 
-	if (opts.answererWrappers.length === 0) {
+	const readiness = inspectAIWorkConfiguration(opts);
+	if (!readiness.ready) {
 		onNoAnswererWrappers?.(opts);
-		return answerWrapperEmptyWarning(0);
+		return $message.warn({ content: readiness.error, duration: 0 });
 	} else {
 		options.start_delay_seconds = options.start_delay_seconds ?? 5;
 		return $message.info({

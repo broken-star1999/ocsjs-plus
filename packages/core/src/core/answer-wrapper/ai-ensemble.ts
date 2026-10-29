@@ -12,21 +12,34 @@ export type AIEnsembleRule =
 	| 'confidence-then-summary'
 	| 'summary-then-confidence';
 
+export type AISubjectiveRule = 'manual' | 'selected' | 'summary';
+
 export interface AIEnsembleConfig {
 	rule?: AIEnsembleRule;
 	models: AIAnswererConfig[];
+	/** Participant configuration failures apply to every question. */
 	error?: string;
+	/** Objective rule dependencies must not disable an independent subjective route. */
+	objectiveError?: string;
+	/** Missing summary configuration may still allow a confidence fallback. */
+	summaryError?: string;
 	repeat?: boolean;
 	threshold?: number;
 	summary?: AIAnswererConfig;
+	/** Independent from the objective voting rule. Omitted only for legacy callers. */
+	subjectiveRule?: AISubjectiveRule;
+	/** Index in configured order, never response arrival order. Missing/invalid means manual review. */
+	subjectiveModelIndex?: number;
 }
 
 export interface AIEnsembleResult {
-	status: 'agreed' | 'summarized' | 'review' | 'confirmed';
+	status: 'running' | 'agreed' | 'summarized' | 'selected' | 'review' | 'confirmed';
 	reason: string;
-	members: { name: string; answers?: string[]; error?: string; ai?: AICallDetails }[];
+	members: { name: string; answers?: string[]; normalizedAnswers?: string[]; error?: string; ai?: AICallDetails }[];
+	progress?: { stage: 'members' | 'summary' | 'done'; completed: number; total: number };
 	vote?: { count: number; total: number; threshold: number };
 	summary?: { name: string; answers?: string[]; error?: string; ai?: AICallDetails };
+	selected?: { index: number; name: string };
 }
 
 export function needsAIReview(infos: SearchInformation[]): boolean {
@@ -46,7 +59,7 @@ export function requireAIReview(infos: SearchInformation[], reason: string): voi
 /** Compare answer values only. No reasoning text or additional model vote can break a tie. */
 export function canonicalEnsembleAnswers(
 	answers: string[],
-	question: { type?: string; title: string; options?: string }
+	question: { type?: string; title: string; options?: string; option_count?: number }
 ): string[] | undefined {
 	if (!answers.length || answers.some((answer) => !answer.trim())) return;
 	const type = resolveAIQuestionType(question);
@@ -61,6 +74,14 @@ export function canonicalEnsembleAnswers(
 		const letters = values[0].toUpperCase();
 		if (!(type === 'single' ? /^[A-Z]$/ : /^[A-Z]+$/).test(letters)) return;
 		if (new Set(letters).size !== letters.length) return;
+		// Only page-adapter metadata is authoritative. Online selections may have
+		// all options embedded in the title and an empty `options` string.
+		if (
+			Number.isInteger(question.option_count) &&
+			question.option_count! >= 0 &&
+			[...letters].some((letter) => letter.charCodeAt(0) - 65 >= question.option_count!)
+		)
+			return;
 		return [letters.split('').sort().join('')];
 	}
 	return values;
@@ -73,9 +94,36 @@ export async function searchAIEnsemble(
 ): Promise<SearchInformation> {
 	const ensemble: AIEnsembleResult = { status: 'review', reason: '', members: [] };
 	const info: SearchInformation = { name: '多模型联合答题', results: [], ensemble };
+	const publish = () => {
+		if (!question.onProgress) return;
+		try {
+			// Observers receive an immutable-in-practice snapshot, never the object
+			// being updated by concurrent responses. They cannot delay paid work.
+			const observed = question.onProgress(JSON.parse(JSON.stringify(info)));
+			if (observed) Promise.resolve(observed).catch(() => {});
+		} catch {
+			// Progress is optional; diagnostics must not turn a valid answer into an error.
+		}
+	};
+	const finish = () => {
+		ensemble.progress = { stage: 'done', completed: ensemble.progress?.completed || 0, total: config.models.length };
+		publish();
+		return info;
+	};
 	const identities = config.models.map((model) => model.endpoint.replace(/\/$/, '') + '\n' + model.model);
-	const rule = config.rule || (config.summary ? 'confidence-then-summary' : 'confidence');
-	const strategies: Record<AIEnsembleRule, string[]> = {
+	const type = resolveAIQuestionType(question);
+	const subjective = type === 'completion' && config.subjectiveRule !== undefined;
+	if (subjective && !['manual', 'selected', 'summary'].includes(config.subjectiveRule!)) {
+		info.error = ensemble.reason = '主观题处理方式无效，请重新选择人工判断、指定回答或总结模型。';
+		return finish();
+	}
+	const rule = subjective
+		? config.subjectiveRule!
+		: type === 'unknown' && config.subjectiveRule !== undefined
+		? 'manual'
+		: config.rule || (config.summary ? 'confidence-then-summary' : 'confidence');
+	const strategies: Record<AIEnsembleRule | 'selected', string[]> = {
+		selected: ['selected'],
 		manual: [],
 		unanimous: ['unanimous'],
 		confidence: ['confidence'],
@@ -83,46 +131,70 @@ export async function searchAIEnsemble(
 		'confidence-then-summary': ['confidence', 'summary'],
 		'summary-then-confidence': ['summary', 'confidence']
 	};
-	if (!Object.prototype.hasOwnProperty.call(strategies, rule) || (rule.includes('summary') && !config.summary)) {
+	if (!Object.prototype.hasOwnProperty.call(strategies, rule)) {
 		info.error = ensemble.reason = '决策规则无效或未指定总结模型，请检查高级设置。';
-		return info;
+		return finish();
+	}
+	if (!subjective && rule !== 'manual' && config.objectiveError) {
+		info.error = ensemble.reason = config.objectiveError;
+		return finish();
+	}
+	if (rule === 'summary' && !config.summary) {
+		info.error = ensemble.reason = config.summaryError || '决策规则未指定总结模型，请检查高级设置。';
+		return finish();
 	}
 	const threshold = rule.includes('confidence') ? config.threshold ?? 100 : 100;
 	if (!Number.isFinite(threshold) || threshold < 50 || threshold > 100) {
 		info.error = ensemble.reason = '置信度阈值（一致率）须为 50–100%。';
-		return info;
+		return finish();
 	}
 	if (config.error || config.models.length < 2 || (!config.repeat && new Set(identities).size !== identities.length)) {
 		info.error = ensemble.reason = config.error || '联合答题至少选择两个不同的有效模型，请检查设置。';
-		return info;
+		return finish();
+	}
+	if (
+		rule === 'selected' &&
+		(!Number.isInteger(config.subjectiveModelIndex) ||
+			config.subjectiveModelIndex! < 0 ||
+			config.subjectiveModelIndex! >= config.models.length)
+	) {
+		info.error = ensemble.reason = '主观题尚未指定有效的参与模型，等待人工评判。';
+		return finish();
 	}
 	// Promise.all keeps configured model order even when responses arrive in a different order.
 	const counts = new Map<string, number>();
-	const responses = await Promise.all(
-		config.models.map((model) => {
-			const key = model.endpoint + '\n' + model.model;
-			const index = (counts.get(key) || 0) + 1;
-			counts.set(key, index);
-			return searchAIAnswer(
-				config.repeat ? { ...model, label: `${model.label || model.model} · 第 ${index} 次` } : model,
-				question,
-				timeoutMs
-			);
+	const canonical: (string[] | undefined)[] = config.models.map(() => undefined);
+	ensemble.status = 'running';
+	ensemble.reason = '正在等待参与模型返回答案。';
+	ensemble.progress = { stage: 'members', completed: 0, total: config.models.length };
+	const invocations = config.models.map((model) => {
+		const key = JSON.stringify([model.sourceId || '', model.endpoint, model.model]);
+		const index = (counts.get(key) || 0) + 1;
+		counts.set(key, index);
+		return config.repeat ? { ...model, label: `${model.label || model.model} · 第 ${index} 次` } : model;
+	});
+	ensemble.members = invocations.map((model) => ({ name: model.label || 'AI · ' + model.model }));
+	publish();
+	await Promise.all(
+		invocations.map(async (model, index) => {
+			const response = await searchAIAnswer(model, question, timeoutMs);
+			const data = response.results[0]?.extra_data as { answers?: string[] } | undefined;
+			const answers = data?.answers;
+			const normalized = answers && canonicalEnsembleAnswers(answers, question);
+			canonical[index] = normalized;
+			ensemble.members[index] = {
+				name: response.name,
+				answers,
+				normalizedAnswers: normalized,
+				ai: response.ai,
+				error: response.error || (!normalized ? '答案格式不符合本题要求' : undefined)
+			};
+			ensemble.progress!.completed++;
+			publish();
 		})
 	);
-	const canonical: (string[] | undefined)[] = [];
-	for (const response of responses) {
-		const data = response.results[0]?.extra_data as { answers?: string[] } | undefined;
-		const answers = data?.answers;
-		const normalized = answers && canonicalEnsembleAnswers(answers, question);
-		canonical.push(normalized);
-		ensemble.members.push({
-			name: response.name,
-			answers,
-			ai: response.ai,
-			error: response.error || (!normalized ? '答案格式不符合本题要求' : undefined)
-		});
-	}
+	// All positions are now settled; successful callbacks cannot reorder members.
+	ensemble.status = 'review';
 	const valid = canonical.every(Boolean);
 	const groups = new Map<string, { answers: string[]; count: number }>();
 	for (const answers of canonical)
@@ -134,13 +206,24 @@ export async function searchAIEnsemble(
 		}
 	const ranked = [...groups.values()].sort((a, b) => b.count - a.count);
 	const winner = ranked[0];
-	const objective = ['single', 'multiple', 'judgement'].includes(resolveAIQuestionType(question));
+	const objective = ['single', 'multiple', 'judgement'].includes(type);
 	const unique = winner && (!ranked[1] || winner.count > ranked[1].count);
 	const agreed =
 		unique && (objective ? winner.count * 100 >= threshold * canonical.length : valid && groups.size === 1);
-	ensemble.vote = { count: winner?.count || 0, total: canonical.length, threshold: objective ? threshold : 100 };
+	if (objective || !subjective)
+		ensemble.vote = { count: winner?.count || 0, total: canonical.length, threshold: objective ? threshold : 100 };
 	let answers: string[] | undefined;
 	for (const strategy of strategies[rule]) {
+		if (strategy === 'selected') {
+			const index = config.subjectiveModelIndex!;
+			answers = canonical[index];
+			ensemble.selected = { index, name: ensemble.members[index].name };
+			if (answers) {
+				ensemble.status = 'selected';
+				ensemble.reason = `按主观题处理方式，采用 ${ensemble.members[index].name} 的答案；不使用一致率评判。`;
+			}
+			break;
+		}
 		if (strategy === 'confidence' || strategy === 'unanimous') {
 			if (!(strategy === 'unanimous' ? valid && groups.size === 1 : agreed)) continue;
 			ensemble.status = 'agreed';
@@ -151,7 +234,14 @@ export async function searchAIEnsemble(
 					: `${winner.count}/${canonical.length} 次答案相同，达到 ${objective ? threshold : 100}% 一致率阈值。`;
 			break;
 		}
-		if (!config.summary) continue;
+		if (!config.summary) {
+			ensemble.summary = { name: '未配置总结模型', error: config.summaryError || '未指定有效的总结模型' };
+			continue;
+		}
+		ensemble.status = 'running';
+		ensemble.reason = '参与模型已返回，正在由总结模型核对。';
+		ensemble.progress = { stage: 'summary', completed: config.models.length, total: config.models.length };
+		publish();
 		const response = await searchAIAnswer(
 			config.summary,
 			{
@@ -179,14 +269,23 @@ export async function searchAIEnsemble(
 			ensemble.reason = '按决策规则，已采用指定总结模型独立核对后的答案。';
 			break;
 		}
+		ensemble.status = 'review';
 	}
 	if (!answers) {
 		info.error = ensemble.reason =
-			rule === 'manual' ? '按当前规则，所有回答交由人工判断。' : '未达到一致率阈值、票数打平或总结失败，等待人工评判。';
-		return info;
+			rule === 'manual'
+				? subjective
+					? '主观题已设为全部人工判断，展示各次回答，等待你在原题处理并确认。'
+					: '按当前规则，所有回答交由人工判断。'
+				: subjective
+				? rule === 'selected'
+					? '指定的主观题回答失败或格式无效，等待人工评判，不自动改用其他回答。'
+					: '主观题总结失败或答案格式无效，等待人工评判。'
+				: '未达到一致率阈值、票数打平或总结失败，等待人工评判。';
+		return finish();
 	}
 	info.results = [
 		{ question: question.title, answer: answers.join('#'), extra_data: { ai: true, ai_native: true, answers } }
 	];
-	return info;
+	return finish();
 }

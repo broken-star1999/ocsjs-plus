@@ -1,7 +1,7 @@
 import { CommonEventEmitter } from 'easy-us';
 import type { SearchInformation } from '../answer-wrapper/interface';
 import { needsAIReview } from '../answer-wrapper/ai-ensemble';
-import type { WorkerEvents } from './interface';
+import type { WorkerEvents, WorkResult, RawElements } from './interface';
 
 /** Keeps doWork unfinished until each disagreement has a human confirmation or the task closes. */
 export class AIReviewQueue {
@@ -19,11 +19,12 @@ export class AIReviewQueue {
 	}
 
 	add(
-		infos: SearchInformation[],
+		infos: SearchInformation[] | (() => SearchInformation[]),
 		validate: () => void,
 		onConfirm: () => Promise<void>
-	): (() => Promise<void>) | undefined {
-		if (this.closed || !needsAIReview(infos)) return;
+	): WorkResult<RawElements>['confirmReview'] {
+		const currentInfos = typeof infos === 'function' ? infos : () => infos;
+		if (this.closed || !needsAIReview(currentInfos())) return;
 		let release!: () => void;
 		let confirmed = false;
 		let confirming = false;
@@ -33,12 +34,22 @@ export class AIReviewQueue {
 			})
 		);
 		this.pending.add(release);
-		return async () => {
+		const complete = () => {
+			if (confirmed) return;
+			confirmed = true;
+			this.pending.delete(release);
+			release();
+		};
+		const confirm = async () => {
 			if (this.closed) throw new Error('原答题任务已关闭，请重新开始。');
 			if (confirmed || confirming) throw new Error('这道题已经确认或正在确认。');
 			validate();
 			confirming = true;
-			const reviews = infos.filter((info) => info.ensemble?.status === 'review');
+			const reviews = currentInfos().filter((info) => info.ensemble?.status === 'review');
+			if (!reviews.length) {
+				confirming = false;
+				throw new Error('本题当前没有待人工处理的回答，请刷新结果后再操作。');
+			}
 			const previous = reviews.map((info) => ({ info, reason: info.ensemble!.reason, error: info.error }));
 			try {
 				for (const info of reviews) {
@@ -47,9 +58,7 @@ export class AIReviewQueue {
 					info.error = undefined;
 				}
 				await onConfirm();
-				confirmed = true;
-				this.pending.delete(release);
-				release();
+				complete();
 			} catch (error) {
 				for (const { info, reason, error: previousError } of previous) {
 					info.ensemble!.status = 'review';
@@ -61,6 +70,7 @@ export class AIReviewQueue {
 				confirming = false;
 			}
 		};
+		return Object.assign(confirm, { complete, pending: () => !this.closed && !confirmed && !confirming });
 	}
 
 	async wait(): Promise<void> {

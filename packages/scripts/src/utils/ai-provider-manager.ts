@@ -115,7 +115,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 	const status = h('div', {
 		className: 'status',
 		role: 'status',
-		textContent: '先配置提供商源，再添加模型，最后选择用于答题的模型。'
+		textContent: '先配置提供商并添加模型。普通模式选择一个模型；高级模式请在“高级模式设置”中安排参与模型。'
 	});
 	root.append(h('style', style), status, h('div', { className: 'workbench' }, [sidebar, detail]));
 	let nameInput: HTMLInputElement;
@@ -316,7 +316,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 					);
 					draft = clone(options.read().sources.find((item) => item.id === source.id)!);
 					render();
-					notify('模型已保存。可在模型行点击“用于答题”。');
+					notify('模型已保存。可设为普通模式模型，或在高级模式设置中选择它。');
 				} catch (err) {
 					error.textContent = err instanceof Error ? err.message : '模型参数格式错误';
 					return false;
@@ -359,7 +359,11 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 						options.write(saveAIModel(options.read(), source.id, { ...model, enabled: toggle.checked }));
 						draft = clone(options.read().sources.find((item) => item.id === source.id)!);
 						render();
-						notify(toggle.checked ? '模型已启用，可以选择用于答题。' : '模型已停用；若它是当前答题模型，选择已清空。');
+						notify(
+							toggle.checked
+								? '模型已启用，可用于普通模式或高级模式。'
+								: '模型已停用；普通模式的对应选择已清空，高级模式也需要检查参与模型。'
+						);
 					};
 					return h('div', { className: 'model-row' }, [
 						h('div', { className: 'model-name' }, [
@@ -368,12 +372,12 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 							h('span', { className: 'badge' }, model.vision ? '文字 · 图片' : '文字')
 						]),
 						toggle,
-						button(options.read().selection === key ? '当前答题模型' : '用于答题', () => {
+						button(options.read().selection === key ? '普通模式当前模型' : '设为普通模式模型', () => {
 							saveDraft();
 							if (!model.enabled) throw new Error('请先启用此模型');
 							options.write({ ...options.read(), selection: key });
 							render();
-							notify('答题模型已切换，重新开始答题后生效。');
+							notify('普通模式模型已切换，下一次任务生效。高级模式参与模型请在“高级模式设置”中选择。');
 						}),
 						button('测试', () => testModel(model)),
 						button('编辑', () => editModel(model)),
@@ -410,7 +414,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 							);
 							draft = clone(options.read().sources.find((item) => item.id === source.id)!);
 							render();
-							notify('模型已添加，请选择用于答题的模型。');
+							notify('模型已添加。可设为普通模式模型，或在高级模式设置中选择它。');
 						})
 					])
 				)

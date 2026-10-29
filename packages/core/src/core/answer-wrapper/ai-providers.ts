@@ -1,6 +1,6 @@
 import { AIAnswererConfig, AIModel, normalizeAIEndpoint, validateAIExtraBody } from './ai';
 import type { AnswererWrapper } from './interface';
-import type { AIEnsembleRule } from './ai-ensemble';
+import type { AIEnsembleRule, AISubjectiveRule } from './ai-ensemble';
 
 export interface AIConfiguredModel extends AIModel {
 	enabled: boolean;
@@ -40,6 +40,8 @@ export function createAIAnswererWrappers(
 		summaryEnabled?: boolean;
 		summarySelection?: string;
 		rule?: AIEnsembleRule;
+		subjectiveRule?: AISubjectiveRule;
+		subjectiveSelection?: string;
 	} = {}
 ): AnswererWrapper[] {
 	const base = {
@@ -55,6 +57,7 @@ export function createAIAnswererWrappers(
 		return ai ? [{ ...base, name: 'AI · ' + ai.model, url: ai.endpoint, ai }] : [];
 	}
 	const models: AIAnswererConfig[] = [];
+	let subjectiveModelIndex = -1;
 	let error: string | undefined;
 	const keys = new Set<string>();
 	for (const assignment of assignments) {
@@ -64,7 +67,11 @@ export function createAIAnswererWrappers(
 		if (!ai) error = '高级模式中存在已删除或停用的模型，请重新选择。';
 		if (!Number.isInteger(assignment.threads) || assignment.threads < 1 || assignment.threads > 8) {
 			error = '每个模型的同题并发数须为 1–8 的整数。';
-		} else if (ai) for (let i = 0; i < assignment.threads; i++) models.push({ ...ai });
+		} else if (ai)
+			for (let i = 0; i < assignment.threads; i++) {
+				if (assignment.key === options.subjectiveSelection && i === 0) subjectiveModelIndex = models.length;
+				models.push({ ...ai });
+			}
 	}
 	if (!error && models.length < 2) error = '高级模式请至少配置两次作答：可选择多个模型，或增加单模型同题并发数。';
 	const rule =
@@ -76,24 +83,32 @@ export function createAIAnswererWrappers(
 			: options.confidenceEnabled === false
 			? 'manual'
 			: 'confidence');
-	if ((rule === 'unanimous' || rule.includes('confidence')) && options.confidenceEnabled === false)
-		error = '当前决策规则需要启用置信度选择。';
-	if (rule.includes('summary') && !options.summaryEnabled) error = '当前决策规则需要启用总结模型。';
+	const objectiveError =
+		(rule === 'unanimous' || rule.includes('confidence')) && options.confidenceEnabled === false
+			? '当前决策规则需要启用置信度选择。'
+			: undefined;
+	const needsSummary = rule.includes('summary') || options.subjectiveRule === 'summary';
+	let summaryError =
+		needsSummary && !options.summaryEnabled ? '当前客观题或主观题处理方式需要启用总结模型。' : undefined;
 	const summary =
-		options.summaryEnabled && rule.includes('summary')
+		options.summaryEnabled && needsSummary
 			? resolveAISelection({ ...state, selection: options.summarySelection || '' })
 			: undefined;
-	if (options.summaryEnabled && rule.includes('summary') && !summary) error = '请选择一个已启用的总结模型。';
+	if (options.summaryEnabled && needsSummary && !summary) summaryError = '请选择一个已启用的总结模型。';
 	return [
 		{
 			...base,
 			aiEnsemble: {
 				models: error ? [] : models,
 				error,
+				objectiveError,
+				summaryError,
 				repeat: true,
 				threshold: options.threshold ?? 100,
 				summary,
-				rule
+				rule,
+				subjectiveRule: options.subjectiveRule,
+				subjectiveModelIndex
 			}
 		}
 	];

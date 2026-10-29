@@ -1,4 +1,4 @@
-import { OCSWorker } from './worker';
+import { OCSWorker, createWorkProgressReporter } from './worker';
 import { createDefaultQuestionResolver } from './question.resolver';
 import { domSearchAll } from '../utils/dom';
 import { QuestionTypes, RawElements, WorkContext, WorkResult } from './interface';
@@ -72,11 +72,23 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 			const questionType = adapter.type(original);
 			const pageUrl = original.root.ownerDocument.location?.href;
 			const signature = contentSignature(original);
-			result.retry = async () => {
+			const run = async (candidate?: string[]) => {
 				if (closed || worker.isClose || currentGeneration !== generation || owners.get(original.root) !== owner)
 					throw new Error('原答题任务已失效，请重新开始答题。');
-				if (busy || worker.isRunning || results.some((item) => !item.resolved)) {
+				const previousInfos = result.ctx?.searchInfos || [];
+				const previousReview = result.confirmReview?.pending?.() ? result.confirmReview : undefined;
+				if (busy || (worker.isRunning && !previousReview) || results.some((item) => !item.resolved)) {
 					throw new Error('请等待当前答题任务或单题重做结束后再操作。');
+				}
+				if (candidate) {
+					if (!needsAIReview(previousInfos)) throw new Error('本题当前没有待人工处理的候选回答。');
+					const exists = previousInfos.some((info) =>
+						[...(info.ensemble?.members || []), ...(info.ensemble?.summary ? [info.ensemble.summary] : [])].some(
+							(member) => !member.error && JSON.stringify(member.answers) === JSON.stringify(candidate)
+						)
+					);
+					if (!candidate.length || candidate.some((answer) => typeof answer !== 'string' || !answer.trim()) || !exists)
+						throw new Error('候选回答已变化或不可用，请刷新结果后重新选择。');
 				}
 				const assertCurrent = () => {
 					if (closed || worker.isClose || currentGeneration !== generation || owners.get(original.root) !== owner)
@@ -101,25 +113,57 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 				};
 				assertCurrent();
 				busy = true;
-				const ctx: WorkContext<E> = { ...original, searchInfos: [], type: adapter.type(original), forceSearch: true };
+				const ctx: WorkContext<E> = {
+					...original,
+					searchInfos: candidate ? previousInfos : [],
+					type: adapter.type(original),
+					forceSearch: true
+				};
+				let succeeded = false;
+				let finalStoreError: unknown;
 				result.retrying = true;
-				result.searching = true;
-				result.requested = false;
+				result.searching = !candidate;
+				result.requested = !!candidate;
 				result.resolved = false;
 				result.result = undefined;
-				result.confirmReview = undefined;
+				result.confirmReview = previousReview;
 				result.error = undefined;
 				result.ctx = ctx;
 				try {
 					await originalUpdate?.(result, questionIndex, results);
-					ctx.searchInfos = (await worker.opts.answerer(ctx.elements, ctx)) || [];
+					assertCurrent();
+					if (!candidate) {
+						const progress = createWorkProgressReporter(
+							result,
+							ctx,
+							() => originalUpdate?.(result, questionIndex, results),
+							() => closed || worker.isClose || currentGeneration !== generation || owners.get(original.root) !== owner
+						);
+						ctx.onSearchProgress = progress.report;
+						let finalInfos;
+						try {
+							finalInfos = (await worker.opts.answerer(ctx.elements, ctx)) || [];
+						} finally {
+							await progress.finish();
+						}
+						ctx.searchInfos = finalInfos;
+					}
 					result.searching = false;
 					result.requested = true;
 					assertCurrent();
 					const plan: RetryAnswer[] = [];
 					const resolver = createDefaultQuestionResolver(ctx, adapter.optionText)[ctx.type!];
 					const resolved = await resolver(
-						ctx.searchInfos,
+						candidate
+							? [
+									{
+										name: '人工采用候选',
+										results: [
+											{ question: '', answer: candidate.join('#'), extra_data: { ai_native: true, answers: candidate } }
+										]
+									}
+							  ]
+							: ctx.searchInfos,
 						ctx.elements.options as HTMLElement[],
 						(type, answer, option) => {
 							plan.push({ type, answer, option });
@@ -130,15 +174,15 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 							if (!needsAIReview(ctx.searchInfos))
 								requireAIReview(ctx.searchInfos, '模型答案一致，但无法匹配页面，等待人工评判。');
 							let confirmed = false;
-							result.confirmReview = async () => {
+							const confirm = async () => {
 								assertCurrent();
-								if (result.ctx !== ctx || result.retrying || busy || confirmed)
-									throw new Error('本次人工确认已失效或仍在处理。');
+								if (result.retrying || busy || confirmed) throw new Error('本次人工确认已失效或仍在处理。');
+								const infosNow = result.ctx?.searchInfos || [];
 								const previous = { result: result.result, error: result.error };
-								const infos = ctx.searchInfos
+								const infos = infosNow
 									.filter((info) => info.ensemble)
 									.map((info) => ({ info, reason: info.ensemble!.reason, error: info.error }));
-								for (const info of ctx.searchInfos)
+								for (const info of infosNow)
 									if (info.ensemble) {
 										info.ensemble.status = 'confirmed';
 										info.ensemble.reason = '用户已在原题人工处理并确认。';
@@ -163,6 +207,14 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 									busy = false;
 								}
 							};
+							result.confirmReview =
+								previousReview ||
+								Object.assign(confirm, {
+									complete: () => {
+										confirmed = true;
+									},
+									pending: () => !confirmed && !closed && !worker.isClose && !busy
+								});
 						}
 						throw new Error(
 							ctx.searchInfos
@@ -172,10 +224,34 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 						);
 					}
 					assertCurrent();
+					await ctx.waitUntilActive?.();
+					assertCurrent();
 					await adapter.apply(plan, ctx, assertCurrent);
 					assertCurrent();
-					result.result = resolved;
+					if (candidate) {
+						for (const info of ctx.searchInfos)
+							if (info.ensemble) {
+								info.ensemble.status = 'confirmed';
+								info.ensemble.reason = '用户已明确采用候选回答，并已通过页面替换校验。';
+								info.error = undefined;
+								info.results = [
+									{
+										question: (ctx.elements.title || []).map((element) => element?.textContent || '').join('\n'),
+										answer: candidate.join('#'),
+										extra_data: { ai: true, ai_native: true, answers: [...candidate], manual_adopted: true }
+									}
+								];
+							}
+					}
+					result.result = candidate ? { ...resolved, manual: true } : resolved;
+					result.confirmReview = undefined;
+					succeeded = true;
 				} catch (error) {
+					if (previousReview) {
+						if (!ctx.searchInfos.some((info) => info.ensemble)) ctx.searchInfos = previousInfos;
+						if (!needsAIReview(ctx.searchInfos)) requireAIReview(ctx.searchInfos, '本次操作未完成，等待人工处理。');
+						result.confirmReview = previousReview;
+					}
 					result.result = { finish: false };
 					result.error = error instanceof Error ? error.message : String(error);
 					throw error;
@@ -187,12 +263,32 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 					try {
 						// 新任务已初始化时，旧请求不能覆盖新任务的同一题号。
 						if (!closed && !worker.isClose && currentGeneration === generation && owners.get(original.root) === owner) {
-							await originalUpdate?.(result, questionIndex, results);
+							try {
+								await originalUpdate?.(result, questionIndex, results);
+							} catch (error) {
+								finalStoreError = error;
+								if (previousReview) {
+									succeeded = false;
+									if (!ctx.searchInfos.some((info) => info.ensemble)) ctx.searchInfos = previousInfos;
+									requireAIReview(ctx.searchInfos, '结果状态保存失败，等待人工检查并确认。');
+									result.confirmReview = previousReview;
+									result.result = { finish: false };
+									result.error = error instanceof Error ? error.message : String(error);
+								}
+							}
 						}
 					} finally {
 						busy = false;
 					}
+					if (succeeded) previousReview?.complete?.();
 				}
+				if (finalStoreError) throw finalStoreError;
+			};
+			result.retry = () => run();
+			result.applyReviewAnswer = (answers) => {
+				if (!Array.isArray(answers) || !answers.length || answers.some((answer) => typeof answer !== 'string'))
+					return Promise.reject(new Error('候选回答格式无效，请重新选择。'));
+				return run(answers);
 			};
 		}
 		await originalInit?.(current, index, all);

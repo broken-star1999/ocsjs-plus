@@ -25,6 +25,14 @@ export interface AIModel {
 }
 
 export interface AIQuestion {
+	/** Optional diagnostics only; observer failures never change an answer request. */
+	onProgress?: (info: SearchInformation) => void | Promise<void>;
+	/** Actual writable fields supplied by the page adapter, never inferred from underscores. */
+	blank_count?: number;
+	/** Actual option elements supplied by the page adapter, never inferred from text lines. */
+	option_count?: number;
+	/** Unique images identified in the question, including images whose conversion failed. */
+	expected_image_count?: number;
 	model_reports?: {
 		name: string;
 		answers?: string[];
@@ -145,7 +153,7 @@ function answerRules(type: AIQuestionType): string[] {
 		];
 	if (type === 'completion')
 		return [
-			'本题为填空或简答题。填空按网页空位顺序返回，每空一个字符串元素，例如 {"answers":["甲","乙"],"uncertain":false}；单个简答输入框返回一个完整答案。',
+			'本题为填空或简答题。填空按网页实际填写位置顺序返回，每个填写位置对应 answers 的一个字符串元素；单个简答输入框返回一个完整答案。',
 			'以实际需要填写的内容作答，保留答案中的公式、代码与标点；题干中出现“单选题”“判断题”等字样不会改变本题类型。'
 		];
 	return [
@@ -158,6 +166,17 @@ export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 	if (!config.model.trim()) throw new Error('请先填写 AI 模型名称');
 	const images = question.images || [];
 	const hasImages = images.length > 0;
+	if (
+		question.expected_image_count !== undefined &&
+		(!Number.isInteger(question.expected_image_count) || question.expected_image_count < 0)
+	) {
+		throw new Error('未取得有效的题目图片数量，本题未请求 AI。');
+	}
+	if (question.expected_image_count !== undefined && images.length !== question.expected_image_count) {
+		throw new Error(
+			`本题有 ${question.expected_image_count} 张图片，仅成功读取 ${images.length} 张，本题未请求 AI。请检查图片题优化或重试。`
+		);
+	}
 	const hasImageReferences = /\[图片\d+\]|https?:\/\/\S+\.(?:png|jpe?g|webp|gif|svg)/i.test(
 		question.title + '\n' + (question.options || '')
 	);
@@ -165,6 +184,20 @@ export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 		throw new Error('本题含图片，请开启图片题优化及 AI 识图，并使用支持图片的模型');
 	}
 	const type = resolveAIQuestionType(question);
+	if (
+		['single', 'multiple', 'judgement'].includes(type) &&
+		question.option_count !== undefined &&
+		(!Number.isInteger(question.option_count) || question.option_count < 1)
+	) {
+		throw new Error('未取得有效的网页选项数量，本题未请求 AI。');
+	}
+	if (
+		type === 'completion' &&
+		question.blank_count !== undefined &&
+		(!Number.isInteger(question.blank_count) || question.blank_count < 1)
+	) {
+		throw new Error('未取得有效的网页填写位置数量，本题未请求 AI。');
+	}
 	const host = new URL(normalizeAIEndpoint(config.endpoint)).hostname;
 	// Enable only documented official endpoints/models; compatible gateways remain opt-in.
 	const jsonMode =
@@ -172,6 +205,10 @@ export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 		(host === 'api.xiaomimimo.com' && /^mimo-v2\.6-(?:flash|pro|pro-ultraspeed)$/.test(config.model.trim()));
 	const text = JSON.stringify({
 		type,
+		...(['single', 'multiple', 'judgement'].includes(type) && question.option_count !== undefined
+			? { option_count: question.option_count }
+			: {}),
+		...(type === 'completion' && question.blank_count !== undefined ? { blank_count: question.blank_count } : {}),
 		question: question.suggestion_title || question.title,
 		options: question.suggestion_options || question.options || '',
 		...(question.model_reports ? { model_reports: question.model_reports } : {})
@@ -195,6 +232,12 @@ export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 					'仅返回 JSON：{"answers":["答案"],"uncertain":false}，不要解释或 Markdown。',
 					...(type === 'unknown' ? [] : ['用户消息的 type 字段由程序确定，优先遵守该题型，不要根据题干内容重新分类。']),
 					...answerRules(type),
+					...(type === 'completion' && question.blank_count !== undefined
+						? [
+								`网页实际只有 ${question.blank_count} 个填写位置，answers 必须恰好包含 ${question.blank_count} 个字符串。`,
+								'blank_count 是实际输入框数量，优先于题干中的下划线、括号或示意空白；同一个待填值在题干重复出现时，不要重复输出答案。'
+						  ]
+						: []),
 					'遇到信息不足、看不清图片或无法确定答案，返回 {"answers":[],"uncertain":true}。',
 					'图片依次对应文本中的 [图片1]、[图片2] 等标记。'
 				].join('\n')
@@ -232,7 +275,12 @@ export function validateAIExtraBody(value: unknown): Record<string, unknown> {
 }
 
 /** Strict JSON parsing: explanations/refusals must never become an answer. */
-export function parseAIAnswers(content: unknown, type?: string, options?: string): string[] | undefined {
+export function parseAIAnswers(
+	content: unknown,
+	type?: string,
+	options?: string,
+	blankCount?: number
+): string[] | undefined {
 	if (typeof content !== 'string') throw new Error('AI 未返回文本答案');
 	const text = content.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, '$1');
 	let value: any;
@@ -249,6 +297,9 @@ export function parseAIAnswers(content: unknown, type?: string, options?: string
 		throw new Error('AI 答案必须为非空字符串数组');
 	}
 	const answers: string[] = value.answers.map((answer: string) => answer.trim());
+	if (type === 'completion' && blankCount !== undefined && answers.length !== blankCount) {
+		throw new Error(`AI 返回 ${answers.length} 个答案，但网页有 ${blankCount} 个填写位置，本题未填写。`);
+	}
 	if ((type === 'single' || type === 'judgement') && answers.length !== 1) {
 		throw new Error('AI 为单选或判断题返回了多个答案');
 	}
@@ -315,7 +366,7 @@ export async function searchAIAnswer(
 			throw new Error('AI 回答未正常完成：' + choice.finish_reason);
 		}
 		if (choice?.message?.refusal) throw new Error('AI 未能回答本题');
-		const answers = parseAIAnswers(choice?.message?.content, type, question.options);
+		const answers = parseAIAnswers(choice?.message?.content, type, question.options, question.blank_count);
 		if (answers) {
 			info.results.push({
 				question: question.title,

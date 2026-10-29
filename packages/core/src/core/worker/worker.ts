@@ -13,7 +13,7 @@ import {
 } from './interface';
 import { createDefaultQuestionResolver } from './question.resolver';
 import { defaultWorkTypeResolver } from './utils';
-import { AnswerWrapperHandlerConfig } from '../answer-wrapper';
+import { AnswerWrapperHandlerConfig, SearchInformation } from '../answer-wrapper';
 import { needsAIReview, requireAIReview } from '../answer-wrapper/ai-ensemble';
 import { AIReviewQueue } from './ai-review-queue';
 
@@ -145,6 +145,9 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 			const ctx: WorkContext<E> = {
 				searchInfos: [],
 				isClosed: () => this.isClose,
+				waitUntilActive: async () => {
+					if (!(await waitForWorkerActive(this))) throw new Error('原答题任务已关闭，已停止填写。');
+				},
 				root: questionRoot,
 				elements: domSearchAll<E>(this.opts.elements, questionRoot),
 				type: undefined,
@@ -172,7 +175,11 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 			results.push({
 				requested: false,
 				resolved: false,
-				ctx: ctx
+				ctx: ctx,
+				locateQuestion: async () => {
+					if (this.isClose || !questionRoot.isConnected) throw new Error('原题已失效，请返回题目并重新开始。');
+					questionRoot.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+				}
 			});
 			// 题目检测钩子：早于搜题，供结果面板提前展示"等待搜索中"占位
 			await this.opts.onQuestionDetected?.(results[results.length - 1], results);
@@ -213,7 +220,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 				/** 标记正在搜题并回调（供结果面板为该序号显示转圈等待动画） */
 				result.searching = true;
 				await this.opts.onResultsUpdate?.(result, index, results);
-				if (this.isClose) return;
+				if (!(await waitForWorkerActive(this))) return;
 
 				/** 查找答案 */
 				ctx.searchInfos = [];
@@ -231,7 +238,20 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 					console.log('ctx', result.ctx);
 				}
 
-				ctx.searchInfos = (await this.opts.answerer(ctx.elements, ctx)) || [];
+				const progress = createWorkProgressReporter(
+					result,
+					ctx,
+					() => this.opts.onResultsUpdate?.(result, index, results),
+					() => this.isClose
+				);
+				ctx.onSearchProgress = progress.report;
+				let finalInfos: SearchInformation[];
+				try {
+					finalInfos = (await this.opts.answerer(ctx.elements, ctx)) || [];
+				} finally {
+					await progress.finish();
+				}
+				ctx.searchInfos = finalInfos;
 
 				// 答案为 undefined 的情况， 需要赋值给一个空字符串，因为可能传回的题目中带有其他提示信息，或者题目里包含答案。
 				ctx.searchInfos.forEach((info) => {
@@ -261,12 +281,32 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 		const waitForRequested = async (result: WorkResult<E>) => {
 			return new Promise<void>((resolve, reject) => {
 				const deadline = Date.now() + (AnswerWrapperHandlerConfig.timeout_seconds + 10) * 1000;
+				let pausedAt: number | undefined = this.isStop ? Date.now() : undefined;
+				let pausedMs = 0;
+				const onPause = () => (pausedAt ??= Date.now());
+				const onContinue = () => {
+					if (pausedAt !== undefined) pausedMs += Date.now() - pausedAt;
+					pausedAt = undefined;
+				};
+				this.on('stop', onPause);
+				this.on('continuate', onContinue);
+				const cleanup = () => {
+					clearInterval(interval);
+					this.removeListener('stop', onPause);
+					this.removeListener('continuate', onContinue);
+				};
 				const interval = setInterval(() => {
+					const now = Date.now();
 					if (result?.requested === true) {
-						clearInterval(interval);
+						cleanup();
 						resolve();
-					} else if (this.isClose || Date.now() >= Math.max(deadline, result.ctx?.searchDeadline || 0)) {
-						clearInterval(interval);
+					} else if (
+						this.isClose ||
+						// Pausing the page must not consume the resolver's wait window;
+						// the API request still keeps its own independent wall-clock timeout.
+						(!this.isStop && now >= Math.max(deadline, result.ctx?.searchDeadline || 0) + pausedMs)
+					) {
+						cleanup();
 						reject(new Error('答题超时或任务已关闭！'));
 					}
 				}, 200);
@@ -297,7 +337,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 				} catch (err) {
 					// 超时错误
 				}
-				if (this.isClose) return;
+				if (!(await waitForWorkerActive(this))) return;
 
 				try {
 					if (result.ctx && needsAIReview(result.ctx.searchInfos)) {
@@ -333,7 +373,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 				} catch (err) {
 					error = (err as any)?.message || err;
 				}
-				if (this.isClose) return;
+				if (!(await waitForWorkerActive(this))) return;
 
 				result.error = error;
 
@@ -346,9 +386,10 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 						requireAIReview(result.ctx.searchInfos, '模型答案一致，但无法匹配页面选项或空位，等待人工评判。');
 					}
 					result.confirmReview = reviews.add(
-						result.ctx.searchInfos,
+						() => result.ctx?.searchInfos || [],
 						() => {
 							if (this.isClose || !result.ctx?.root.isConnected) throw new Error('原题已失效，请重新开始答题。');
+							if (result.retrying) throw new Error('本题正在重新请求或采用候选，请等待操作完成。');
 						},
 						async () => {
 							const previous = { error: result.error, result: result.result };
@@ -444,6 +485,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 		await Promise.all([resolverThread(), requestThreadHandler()]);
 		await reviews.wait();
 		reviews.dispose();
+		if (!(await waitForWorkerActive(this))) return results;
 
 		this.isRunning = false;
 		return results;
@@ -556,13 +598,13 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 				}));
 				results[index].requested = true;
 				await this.opts.onResultsUpdate?.(results[index], index, results);
-				if (this.isClose) return;
+				if (!(await waitForWorkerActive(this))) return;
 
 				try {
 					const resolved = needsAIReview(infos)
 						? { finish: false, error: '等待人工评判' }
 						: await this.opts.resolver(infos);
-					if (this.isClose) return;
+					if (!(await waitForWorkerActive(this))) return;
 					results[index].finish = resolved.finish;
 					results[index].error = resolved.error;
 					results[index].resolved = true;
@@ -612,8 +654,43 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 		}
 		await reviews.wait();
 		reviews.dispose();
+		if (!(await waitForWorkerActive(this))) return;
 		this.isRunning = false;
 	}
+}
+
+/** Serialize progress writes so an older async store write cannot overwrite the final answer. */
+export function createWorkProgressReporter<E extends RawElements>(
+	result: WorkResult<E>,
+	ctx: WorkContext<E>,
+	update: () => void | Promise<void>,
+	isClosed: () => boolean
+) {
+	let accepting = true;
+	let pending = Promise.resolve();
+	return {
+		report(infos: SearchInformation[]): Promise<void> {
+			if (!accepting || isClosed() || result.requested || result.ctx !== ctx) return Promise.resolve();
+			const snapshot = JSON.parse(JSON.stringify(infos)) as SearchInformation[];
+			pending = pending
+				.then(async () => {
+					if (isClosed() || result.requested || result.ctx !== ctx) return;
+					ctx.searchInfos = snapshot;
+					await update();
+				})
+				.catch((error) => console.warn('AI progress display failed', error));
+			return pending;
+		},
+		async finish() {
+			accepting = false;
+			await pending;
+		}
+	};
+}
+
+async function waitForWorkerActive(worker: { isStop: boolean; isClose: boolean }): Promise<boolean> {
+	await waitForContinuate(() => worker.isStop && !worker.isClose);
+	return !worker.isClose;
 }
 
 async function waitForContinuate(isStopping: () => boolean) {

@@ -43,6 +43,10 @@ export interface WorkContext<E> {
 	searchDeadline?: number;
 	/** Local cancellation guard for platform resolvers; omitted from stored result summaries. */
 	isClosed?: () => boolean;
+	/** Pause before each page write; rejects if the owning task closes while waiting. */
+	waitUntilActive?: () => Promise<void>;
+	/** Local, ordered progress sink. Never serialized with question/result data. */
+	onSearchProgress?: (infos: SearchInformation[]) => Promise<void>;
 }
 
 /** 答案题目处理器结果 */
@@ -53,7 +57,11 @@ export interface ResolverResult {
 
 /** 答题结果 */
 export interface WorkResult<E extends RawElements> {
-	confirmReview?: () => Promise<void>;
+	confirmReview?: (() => Promise<void>) & { complete?: () => void; pending?: () => boolean };
+	/** Explicitly adopt a current model candidate through the platform's validated replacement adapter. */
+	applyReviewAnswer?: (answers: string[]) => Promise<void>;
+	/** Scroll to the live question in its owning frame. */
+	locateQuestion?: () => Promise<void>;
 	/** 仅在当前页面内有效，不可直接序列化。由已适配的平台提供。 */
 	retry?: () => Promise<void>;
 	retrying?: boolean;
@@ -77,6 +85,12 @@ export interface SimplifyWorkResult {
 	/** Local callback, removed by the scripts layer before storing results. */
 	_confirmReview?: () => Promise<void>;
 	reviewControl?: { id: string; frame: string };
+	reviewActions?: {
+		adopt?: { id: string; frame: string };
+		retry?: { id: string; frame: string };
+		locate?: { id: string; frame: string };
+		unsupportedReason?: string;
+	};
 	/** 单题重做的页面会话地址，不包含 DOM、密钥或函数。 */
 	retry?: { id: string; frame: string };
 	retrying?: boolean;

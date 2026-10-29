@@ -46,6 +46,9 @@ export async function defaultAnswerWrapperHandler(
 	answererWrappers: AnswererWrapper[],
 	// 上下文解析环境
 	env: {
+		blank_count?: number;
+		option_count?: number;
+		expected_image_count?: number;
 		title?: string;
 		options?: string;
 		type?: string;

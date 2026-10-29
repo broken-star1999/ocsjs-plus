@@ -189,6 +189,13 @@ const MIN_IMAGE_DIMENSION = 14;
  */
 export const IMAGE_URL_REGEX = /https?:\/\/[^\s一-鿿＀-￯]+?\.(?:png|jpe?g|gif|bmp|webp|svg)(?:\?[^\s一-鿿＀-￯]*)?/gi;
 
+/** One source of truth for both image completeness checks and upload order. */
+function questionImageUrls(title: string, options?: string, titleImages?: string[], optionImages?: string[]) {
+	const titleUrls = titleImages?.length ? titleImages : title.match(IMAGE_URL_REGEX) || [];
+	const optionUrls = optionImages?.length ? optionImages : options?.match(IMAGE_URL_REGEX) || [];
+	return { titleUrls, optionUrls, allUrls: [...new Set([...titleUrls, ...optionUrls])] };
+}
+
 export async function createImageSuggestion(
 	title: string,
 	options?: string,
@@ -199,20 +206,8 @@ export async function createImageSuggestion(
 ): Promise<ImageSuggestionResult | undefined> {
 	// 收集标题和选项中的所有图片 URL，保持顺序
 	// 若调用方提供 images 数组则直接使用（DOM 遍历所得，跳过正则）；否则回退到正则提取（字符串输入场景）
-	const titleUrls = titleImages && titleImages.length ? titleImages.slice() : title.match(IMAGE_URL_REGEX) || [];
-	const optionUrls = optionImages && optionImages.length ? optionImages.slice() : options?.match(IMAGE_URL_REGEX) || [];
-
-	if (titleUrls.length === 0 && optionUrls.length === 0) return undefined;
-
-	// 去重，保持顺序
-	const allUrls: string[] = [];
-	const seen = new Set<string>();
-	for (const url of [...titleUrls, ...optionUrls]) {
-		if (!seen.has(url)) {
-			seen.add(url);
-			allUrls.push(url);
-		}
-	}
+	const { optionUrls, allUrls } = questionImageUrls(title, options, titleImages, optionImages);
+	if (allUrls.length === 0) return undefined;
 
 	// 并行转换所有图片为 base64
 	const base64Map = new Map<string, string>();
@@ -283,19 +278,6 @@ export async function createImageSuggestion(
 	};
 }
 
-/** 按行去重字符串，保持首次出现的顺序 */
-function dedupeLines(str: string): string {
-	const seen = new Set<string>();
-	const result: string[] = [];
-	for (const line of str.split('\n')) {
-		if (!seen.has(line)) {
-			seen.add(line);
-			result.push(line);
-		}
-	}
-	return result.join('\n');
-}
-
 export async function buildAnswererEnv(params: {
 	type?: string;
 	title: string;
@@ -312,17 +294,19 @@ export async function buildAnswererEnv(params: {
 	imageUrls: string[];
 }> {
 	// options 归一化为字符串：数组按行拼接，保证后续占位符替换与图片匹配均为字符串处理
-	const rawOptions = Array.isArray(params.options)
-		? params.options.filter((o) => o != null && o !== '').join('\n')
+	const options = Array.isArray(params.options)
+		? params.options.map((option) => option ?? '').join('\n')
 		: params.options ?? '';
-	// options 按行去重（保持顺序）
-	const options = dedupeLines(rawOptions);
+	// Repeated/empty lines may belong to different options; removing them changes choice positions.
 	// 原题 title / options 始终保留，不做覆盖与修改
 	const env: Record<string, any> = {
 		type: params.type || 'unknown',
 		title: params.title,
 		options
 	};
+	const expectedImages = questionImageUrls(params.title, options, params.titleImages, params.optionsImages).allUrls
+		.length;
+	if (expectedImages) env.expected_image_count = expectedImages;
 	let imageUrls: string[] = [];
 	if (params.enableImageOptimize) {
 		const suggestion = await createImageSuggestion(params.title, options, params.titleImages, params.optionsImages);
@@ -334,7 +318,7 @@ export async function buildAnswererEnv(params: {
 			imageUrls = suggestion.urls;
 			env.suggestion_title = suggestion.suggestion_title;
 			if (suggestion.suggestion_options !== undefined) {
-				env.suggestion_options = dedupeLines(suggestion.suggestion_options);
+				env.suggestion_options = suggestion.suggestion_options;
 			}
 		}
 	}

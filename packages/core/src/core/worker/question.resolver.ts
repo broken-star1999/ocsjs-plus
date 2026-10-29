@@ -28,7 +28,8 @@ export function createDefaultQuestionResolver<E>(
 	optionText?: (el: HTMLElement, i: number) => string
 ): Record<'single' | 'multiple' | 'completion' | 'judgement', QuestionResolver<E>> {
 	const toText = (o: HTMLElement, i: number) => (optionText ? optionText(o, i) : o.innerText);
-	const assertActive = () => {
+	const assertActive = async () => {
+		await ctx.waitUntilActive?.();
 		if (ctx.isClosed?.()) throw new Error('原答题任务已关闭，已停止填写。');
 	};
 	return {
@@ -47,7 +48,7 @@ export function createDefaultQuestionResolver<E>(
 				if (result.finish && result.option !== undefined) {
 					const index = optionTexts.indexOf(result.option);
 					const opt = index !== -1 ? options[index] : options[0];
-					assertActive();
+					await assertActive();
 					await handler('judgement', result.option, opt, ctx);
 				}
 				return result;
@@ -61,7 +62,7 @@ export function createDefaultQuestionResolver<E>(
 			if (result.finish && result.option !== undefined) {
 				const index = result.optionIndex ?? optionTexts.indexOf(result.option);
 				const opt = index !== -1 ? options[index] : options[0];
-				assertActive();
+				await assertActive();
 				await handler('single', result.option, opt, ctx);
 			}
 
@@ -89,7 +90,7 @@ export function createDefaultQuestionResolver<E>(
 					const optText = resolvedOptions[i];
 					const index = result.plainOptionIndices?.[i] ?? optionTexts.indexOf(optText);
 					const opt = index !== -1 ? options[index] : options[0];
-					assertActive();
+					await assertActive();
 					await handler('multiple', optText, opt, ctx);
 				}
 			}
@@ -111,7 +112,7 @@ export function createDefaultQuestionResolver<E>(
 			if (result.finish && result.option !== undefined) {
 				const index = optionTexts.indexOf(result.option);
 				const opt = index !== -1 ? options[index] : options[0];
-				assertActive();
+				await assertActive();
 				await handler('judgement', result.option, opt, ctx);
 			}
 
@@ -128,7 +129,7 @@ export function createDefaultQuestionResolver<E>(
 			if (ai !== undefined) {
 				if (ai.length !== options.length || ai.some((answer) => !answer.trim())) return { finish: false };
 				for (let i = 0; i < ai.length; i++) {
-					assertActive();
+					await assertActive();
 					await handler('completion', ai[i], options[i], ctx);
 				}
 				return { finish: true, answers: ai };
@@ -139,7 +140,7 @@ export function createDefaultQuestionResolver<E>(
 
 			if (result.finish && result.answers) {
 				for (let i = 0; i < result.answers.length; i++) {
-					assertActive();
+					await assertActive();
 					await handler('completion', result.answers[i], options[i], ctx);
 				}
 			}
