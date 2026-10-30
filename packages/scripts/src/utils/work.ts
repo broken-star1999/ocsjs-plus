@@ -631,6 +631,8 @@ export function createCommonAnswerer(options: {
 				env.option_count = (ctx.elements.options || []).filter(Boolean).length;
 			}
 			if (ctx.onSearchProgress) env.onProgress = (info: SearchInformation) => ctx.onSearchProgress!([info]);
+			// The same task gate must also reach a summary started after participant calls settle.
+			env.beforeRequest = assertActive;
 			// Pausing/closing during image preparation must prevent a new paid request.
 			await assertActive();
 			const searchInfos = await defaultAnswerWrapperHandler(options.answererWrappers, env);

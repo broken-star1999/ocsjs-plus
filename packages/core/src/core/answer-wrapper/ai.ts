@@ -38,6 +38,8 @@ export interface AIOptionItem {
 export interface AIQuestion {
 	/** Optional diagnostics only; observer failures never change an answer request. */
 	onProgress?: (info: SearchInformation) => void | Promise<void>;
+	/** Local task pause/cancellation gate before each paid completion, including later summary calls. */
+	beforeRequest?: () => void | Promise<void>;
 	/** Actual writable fields supplied by the page adapter, never inferred from underscores. */
 	blank_count?: number;
 	/** Actual option elements supplied by the page adapter, never inferred from text lines. */
@@ -449,6 +451,14 @@ export async function searchAIAnswer(
 	timeoutMs: number
 ): Promise<SearchInformation> {
 	const info: SearchInformation = { name: config.label || 'AI · ' + config.model, results: [] };
+	if (question.beforeRequest) {
+		try {
+			await question.beforeRequest();
+		} catch (error) {
+			info.error = error instanceof Error ? error.message : '原答题任务已停止，本次未请求 AI。';
+			return info;
+		}
+	}
 	const record: AICallRecord = {
 		id: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2),
 		startedAt: Date.now(),

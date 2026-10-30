@@ -342,6 +342,71 @@ async function main() {
 			root.remove();
 		}
 	});
+	for (const action of ['close', 'pause', 'pause-then-close'] as const) {
+		await test(action + ' while participant calls are inflight gates the later paid summary request', async () => {
+			const pending: any[] = [];
+			let closed = false;
+			let paused = false;
+			let release = () => {};
+			const resumed = new Promise<void>((resolve) => (release = resolve));
+			runtime.GM_xmlhttpRequest = (request: any) => pending.push(request);
+			const answerer = createCommonAnswerer({
+				titleTransform: () => 'summary lifecycle',
+				optionsTransform: () => '甲\n乙',
+				answererWrappers: [
+					{
+						aiEnsemble: {
+							models: [config, { ...config, model: 'second' }],
+							summary: { ...config, model: 'summary' },
+							rule: 'summary'
+						}
+					} as any
+				],
+				period: 0
+			});
+			const task = answerer({}, {
+				type: 'single',
+				elements: { options: [originalCreateElement('label'), originalCreateElement('label')] },
+				isClosed: () => closed,
+				waitUntilActive: async () => {
+					if (paused) await resumed;
+				}
+			} as any);
+			try {
+				while (pending.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
+				assert.ok(pending.every((request) => !request.data.includes('beforeRequest')));
+				if (action === 'close') closed = true;
+				else paused = true;
+				respond(pending[0], ['B']);
+				respond(pending[1], ['B']);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				assert.equal(pending.length, 2, 'no new summary HTTP may start while paused or closed');
+				if (action === 'pause') {
+					paused = false;
+					release();
+					while (pending.length < 3) await new Promise((resolve) => setTimeout(resolve, 5));
+					assert.equal(JSON.parse(pending[2].data).model, 'summary');
+					assert.ok(!pending[2].data.includes('beforeRequest'));
+					respond(pending[2], ['B']);
+					const result = await task;
+					assert.equal(result[0].ensemble?.status, 'summarized');
+					assert.equal(result[0].results[0].answer, 'B');
+				} else {
+					closed = true;
+					release();
+					const result = await task;
+					assert.equal(pending.length, 2);
+					assert.equal(result[0].results.length, 0);
+					assert.match(result[0].ensemble?.summary?.error || '', /任务已关闭/);
+				}
+			} finally {
+				closed = true;
+				release();
+				for (const request of pending) respond(request, ['B']);
+				await task.catch(() => {});
+			}
+		});
+	}
 	for (const status of [400, 401, 402, 403, 404, 429, 500]) {
 		await test('HTTP ' + status + ' exposes a local error without returning a candidate or credentials', async () => {
 			runtime.GM_xmlhttpRequest = (request: any) => {
