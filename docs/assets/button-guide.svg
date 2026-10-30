@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="208" height="56" viewBox="0 0 208 56" role="img" aria-labelledby="guide-title guide-desc" font-family="'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title id="guide-title">使用指南</title>
+  <desc id="guide-desc">深海军蓝色描边圆角按钮，包含打开的书本线框图标，文字为使用指南。</desc>
+  <rect x="0.5" y="3.5" width="207" height="49" rx="12" fill="#151F30" stroke="#34445E"/>
+  <g fill="none" stroke="#8CA7FF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M40 20 c-3-3-7-3-11-2 v18 c4-1 8-1 11 2 3-3 7-3 11-2 V18 c-4-1-8-1-11 2z"/>
+    <path d="M40 20 V38 M33 23 h3 M33 28 h3 M44 23 h3 M44 28 h3"/>
+  </g>
+  <text x="73" y="35" fill="#EDF3FF" font-size="18" font-weight="600">使用指南</text>
+</svg>
