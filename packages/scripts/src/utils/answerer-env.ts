@@ -330,12 +330,15 @@ export async function createImageSuggestion(
 	const base64Map = new Map<string, string>();
 	await Promise.all(
 		allUrls.map(async (url) => {
+			let downloaded: string | undefined;
 			try {
-				const base64 = await imageToBase64(url);
+				downloaded = await imageToBase64(url);
 				// Decode formats concurrently too: several slow SVGs must not multiply the preparation deadline.
-				base64Map.set(url, await normalizeImageDataUrl(base64));
+				base64Map.set(url, await normalizeImageDataUrl(downloaded));
 			} catch {
-				// 转换失败的图片跳过
+				// A temporary HTTP-200 login/error response must not poison later retries.
+				// Keep a concurrent successful download if it has already replaced this value.
+				if (downloaded !== undefined && imageBase64Cache.get(url) === downloaded) imageBase64Cache.delete(url);
 			}
 		})
 	);

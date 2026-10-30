@@ -68,7 +68,7 @@ export class SearchInfosElement extends HTMLElement {
 							.split('\n')
 							.map((l) => l.trim())
 							.filter(Boolean)
-							.map((l) => h('div', { innerHTML: l }))
+							.map((l) => h('div', { innerHTML: DOMPurify.sanitize(l) }))
 					]),
 					// 题型标签放到操作行内"复制"按钮左侧，避免独占一行高度
 					createQuestionTitleExtra(
@@ -134,7 +134,9 @@ export class SearchInfosElement extends HTMLElement {
 
 						return h('div', { className: 'search-result' }, [
 							/** 题目（和原题完全匹配时不显示，避免重复） */
-							...(isSameQuestion ? [] : [h('div', { className: 'question' }, [h('span', { innerHTML: title })])]),
+							...(isSameQuestion
+								? []
+								: [h('div', { className: 'question' }, [h('span', { innerHTML: DOMPurify.sanitize(title) })])]),
 							/** 答案 */
 							h('div', { className: 'answer' }, [
 								h('span', '答案：'),
@@ -143,7 +145,7 @@ export class SearchInfosElement extends HTMLElement {
 											$ui.tooltip(
 												h('span', {
 													className: 'search-result-answer-tag ' + tag.color,
-													innerHTML: tag.text,
+													innerHTML: DOMPurify.sanitize(tag.text),
 													title: tag.title,
 													dataset: { title: tag.title }
 												})

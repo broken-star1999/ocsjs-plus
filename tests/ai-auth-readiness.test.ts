@@ -365,6 +365,73 @@ async function main() {
 		assert.equal(inspectAIWorkConfiguration({ answererWrappers: wrappers }).ready, true);
 		assert.equal(requests.length, 0);
 	});
+	for (const summaryFailure of ['missing key', 'invalid endpoint', 'empty model ID'] as const) {
+		await test(`a subjective-only summary with ${summaryFailure} does not block objective work`, async () => {
+			const member = source('member', 'none');
+			const summary = source('subjective-summary');
+			if (summaryFailure === 'invalid endpoint') summary.endpoint = 'javascript:invalid';
+			if (summaryFailure === 'empty model ID') summary.models[0].id = '';
+			const wrappers = createAIAnswererWrappers(
+				state(member, summary),
+				true,
+				[{ key: aiModelKey(member.id, 'fixture'), threads: 2 }],
+				{
+					confidenceEnabled: true,
+					rule: 'confidence',
+					threshold: 100,
+					subjectiveRule: 'summary',
+					summaryEnabled: true,
+					summarySelection: aiModelKey(summary.id, summary.models[0].id)
+				}
+			);
+			const readiness = inspectAIWorkConfiguration({ answererWrappers: wrappers });
+			assert.equal(readiness.ready, true, 'the independent objective rule remains runnable');
+			assert.equal(readiness.error, '');
+			assert.equal(readiness.warnings.length, 1);
+			assert.match(readiness.warnings[0], /主观题.*总结模型/);
+			assert.equal(requests.length, 0, 'readiness checks never use the transport');
+			const objective = await searchAIEnsemble(wrappers[0].aiEnsemble!, question, 1000);
+			assert.equal(objective.ensemble?.status, 'agreed');
+			assert.equal(objective.results[0].answer, 'A');
+			assert.equal(requests.length, 2);
+			assert.ok(requests.every((request) => request.headers.Authorization === undefined));
+			const subjective = await searchAIEnsemble(
+				wrappers[0].aiEnsemble!,
+				{ title: '1 + 1?', type: 'completion', blank_count: 1 },
+				1000
+			);
+			assert.equal(subjective.results.length, 0);
+			assert.equal(subjective.ensemble?.status, 'review');
+			assert.match(subjective.error || '', /Key|密钥|地址|模型 ID/);
+			assert.equal(requests.length, 2, 'an invalid subjective summary cannot start paid requests');
+		});
+	}
+	await test('a default objective summary rule keeps its required key as a global dependency', async () => {
+		const member = source('member', 'none');
+		const summary = source('summary');
+		const wrappers = createAIAnswererWrappers(
+			state(member, summary),
+			true,
+			[{ key: aiModelKey(member.id, 'fixture'), threads: 2 }],
+			{
+				confidenceEnabled: true,
+				rule: 'confidence',
+				subjectiveRule: 'summary',
+				summaryEnabled: true,
+				summarySelection: aiModelKey(summary.id, 'fixture')
+			}
+		);
+		// Direct wrapper callers may omit a rule; core then defaults to confidence-then-summary.
+		delete wrappers[0].aiEnsemble!.rule;
+		const readiness = inspectAIWorkConfiguration({ answererWrappers: wrappers });
+		assert.equal(readiness.ready, false);
+		assert.match(readiness.error, /总结模型.*Key/);
+		assert.equal(requests.length, 0);
+		const objective = await searchAIEnsemble(wrappers[0].aiEnsemble!, question, 1000);
+		assert.equal(objective.results.length, 0);
+		assert.match(objective.error || '', /Key/);
+		assert.equal(requests.length, 0);
+	});
 	await test('no-auth ensemble participants agree without consulting an unused key-required summary', async () => {
 		const member = source('member', 'none');
 		const summary = source('summary');

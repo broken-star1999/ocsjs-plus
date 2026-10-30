@@ -45,10 +45,18 @@ export function inspectAIWorkConfiguration(options: AIWorkStatusOptions) {
 		}
 	}
 	for (const config of ensembles) {
-		if (config.summary && (config.rule?.includes('summary') || config.subjectiveRule === 'summary')) {
+		const objectiveUsesSummary = (config.rule || (config.summary ? 'confidence-then-summary' : 'confidence')).includes(
+			'summary'
+		);
+		if (config.summary && (objectiveUsesSummary || config.subjectiveRule === 'summary')) {
 			const configurationError = getAIConfigurationError(config.summary);
-			if (configurationError)
-				error ||= `总结模型 ${config.summary.label || config.summary.model}：${configurationError}`;
+			if (configurationError) {
+				const summaryError = `总结模型 ${config.summary.label || config.summary.model}：${configurationError}`;
+				// An objective rule that never uses this model must remain runnable.
+				// The subjective route validates its summary again before any requests.
+				if (objectiveUsesSummary) error ||= summaryError;
+				else warnings.push('主观题：' + summaryError);
+			}
 		}
 	}
 	const groupedModels = new Map<string, { name: string; count: number }>();

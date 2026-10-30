@@ -275,15 +275,16 @@ async function main() {
 	});
 	await test('generated install and metadata headers agree on Plus version, update endpoints and full-domain connect grants', () => {
 		const root = path.resolve(__dirname, '..');
+		const output = path.resolve(root, 'scripts', process.env.BUILD_PATH || '../dist');
 		const metadata = (file: string) => {
-			const text = fs.readFileSync(path.join(root, file), 'utf8').split('// ==/UserScript==')[0];
+			const text = fs.readFileSync(path.join(output, file), 'utf8').split('// ==/UserScript==')[0];
 			const result = new Map<string, string[]>();
 			for (const match of text.matchAll(/^\/\/ @(\S+)\s+(.+)$/gm))
 				result.set(match[1], [...(result.get(match[1]) || []), match[2].trim()]);
 			return result;
 		};
-		const script = metadata('dist/ocs.user.js');
-		const meta = metadata('dist/ocs.meta.js');
+		const script = metadata('ocs.user.js');
+		const meta = metadata('ocs.meta.js');
 		const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
 		for (const field of ['version', 'namespace', 'updateURL', 'downloadURL', 'connect', 'grant'])
 			assert.deepEqual(script.get(field), meta.get(field));
