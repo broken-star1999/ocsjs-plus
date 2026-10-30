@@ -688,7 +688,7 @@ export function createWorkProgressReporter<E extends RawElements>(
 	};
 }
 
-async function waitForWorkerActive(worker: { isStop: boolean; isClose: boolean }): Promise<boolean> {
+export async function waitForWorkerActive(worker: { isStop: boolean; isClose: boolean }): Promise<boolean> {
 	await waitForContinuate(() => worker.isStop && !worker.isClose);
 	return !worker.isClose;
 }

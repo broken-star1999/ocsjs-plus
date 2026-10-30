@@ -11,6 +11,7 @@ import {
 	domSearchAll,
 	SearchInformation,
 	enableSingleQuestionRetry,
+	waitForWorkerActive,
 	QuestionTypes
 } from '@ocsjs/core';
 import { createCXQuestionRetryAdapter } from '../utils/cx-question-retry';
@@ -2243,51 +2244,66 @@ const JobRunner = {
 			}
 		});
 
-		const results = await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
-		// 章节测试未使用 commonWork，这里手动触发状态更新
-		CommonEvents.emitWorkerStateChange('done');
+		const onChapterClose = () => CommonEvents.emitWorkerStateChange('close');
+		worker.once('close', onChapterClose);
+		try {
+			const results = await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
+			if (!(await waitForWorkerActive(worker))) return;
 
-		const msg = `答题完成，将等待 ${stopSecondWhenFinish} 秒后进行保存或提交。`;
-		$console.info(msg);
-		$message.info({ content: msg, duration: stopSecondWhenFinish });
-		await $.sleep(stopSecondWhenFinish * 1000);
+			const msg = `答题完成，将等待 ${stopSecondWhenFinish} 秒后进行保存或提交。`;
+			$console.info(msg);
+			$message.info({ content: msg, duration: stopSecondWhenFinish });
+			await $.sleep(stopSecondWhenFinish * 1000);
+			if (!(await waitForWorkerActive(worker))) return;
 
-		// 处理提交
-		await worker.uploadHandler({
-			type: upload,
-			results,
-			async callback(finishedRate, uploadable) {
-				const msg = `完成率 ${finishedRate.toFixed(2)}% :  ${uploadable ? '3秒后将自动提交' : '3秒后将自动保存'} `;
-				$console.info(msg);
-				$message.success({ content: msg, duration: 3 });
-
-				await $.sleep(3000);
-
-				if (uploadable) {
-					// @ts-ignore 提交
-					frameWindow.btnBlueSubmit();
+			// 处理提交
+			await worker.uploadHandler({
+				type: upload,
+				results,
+				async callback(finishedRate, uploadable) {
+					const msg = `完成率 ${finishedRate.toFixed(2)}% :  ${uploadable ? '3秒后将自动提交' : '3秒后将自动保存'} `;
+					$console.info(msg);
+					$message.success({ content: msg, duration: 3 });
 
 					await $.sleep(3000);
-					/** 确定按钮 */
-					// @ts-ignore 确定
-					frameWindow.submitCheckTimes();
-					// @ts-ignore 2024/4 更新后上方函数无法关闭弹窗，需要手动关闭确定弹窗
-					top.$('#workpop').hide();
-				} else {
-					// @ts-ignore 禁止弹窗
-					frameWindow.alert = () => {};
-					// @ts-ignore 暂时保存
-					frameWindow.noSubmit();
+					if (!(await waitForWorkerActive(worker))) return;
+
+					if (uploadable) {
+						// @ts-ignore 提交
+						frameWindow.btnBlueSubmit();
+
+						await $.sleep(3000);
+						if (!(await waitForWorkerActive(worker))) return;
+						/** 确定按钮 */
+						// @ts-ignore 确定
+						frameWindow.submitCheckTimes();
+						// @ts-ignore 2024/4 更新后上方函数无法关闭弹窗，需要手动关闭确定弹窗
+						top.$('#workpop').hide();
+					} else {
+						// @ts-ignore 禁止弹窗
+						frameWindow.alert = () => {};
+						// @ts-ignore 暂时保存
+						frameWindow.noSubmit();
+					}
 				}
+			});
+
+			if (!(await waitForWorkerActive(worker))) return;
+			// 还原尺寸状态
+			if (visual_state === 'minimize' && BackgroundProject.scripts.render.cfg.visual !== 'minimize') {
+				CORSUtils.panelMinimize();
 			}
-		});
 
-		// 还原尺寸状态
-		if (visual_state === 'minimize' && BackgroundProject.scripts.render.cfg.visual !== 'minimize') {
-			CORSUtils.panelMinimize();
+			worker.removeListener('close', onChapterClose);
+			worker.emit('done');
+			// 保存或提交阶段也属于任务生命周期，完成后才开放结果操作。
+			CommonEvents.emitWorkerStateChange('done');
+		} catch (error) {
+			if (!worker.isClose) CommonEvents.emitWorkerStateChange('close');
+			throw error;
+		} finally {
+			worker.removeListener('close', onChapterClose);
 		}
-
-		worker.emit('done');
 	},
 	/**
 	 * 带音频的PPT

@@ -6,6 +6,7 @@ import {
 	AnswererWrapper,
 	SearchInformation,
 	WorkContext,
+	AnswerWrapperHandlerConfig,
 	$
 } from '@ocsjs/core';
 import { $ui, $message, MessageElement, Script, h, CommonEventEmitter, cors, $elements } from 'easy-us';
@@ -545,10 +546,12 @@ export function createCommonAnswerer(options: {
 
 	return async (elements: any, ctx: WorkContext<any>): Promise<SearchInformation[]> => {
 		const ensembles = options.answererWrappers.flatMap((wrapper) => (wrapper.aiEnsemble ? [wrapper.aiEnsemble] : []));
-		if (ensembles.length) {
+		const basicModels = options.answererWrappers.flatMap((wrapper) => (wrapper.ai ? [wrapper.ai] : []));
+		if (ensembles.length || basicModels.length) {
 			const timeout = (config: { timeoutSeconds?: number }) =>
-				Math.min(180_000, Math.max(1000, (config.timeoutSeconds ?? 60) * 1000));
+				Math.min(180_000, Math.max(1000, (config.timeoutSeconds ?? AnswerWrapperHandlerConfig.timeout_seconds) * 1000));
 			const budget = Math.max(
+				...basicModels.map(timeout),
 				...ensembles.map(
 					(config) =>
 						Math.max(0, ...config.models.map(timeout)) +
@@ -568,7 +571,12 @@ export function createCommonAnswerer(options: {
 		const titleImages = titleResult.images;
 
 		const search = async () => {
+			const assertActive = async () => {
+				await ctx.waitUntilActive?.();
+				if (ctx.isClosed?.()) throw new Error('原答题任务已关闭，已停止搜题。');
+			};
 			await $.sleep((options.period ?? 1) * 1000);
+			await assertActive();
 			const defaultOptions: HTMLElement[] | undefined = !options.optionsTransform
 				? (ctx.elements.options ?? []).filter((option): option is HTMLElement => !!option)
 				: undefined;
@@ -623,6 +631,8 @@ export function createCommonAnswerer(options: {
 				env.option_count = (ctx.elements.options || []).filter(Boolean).length;
 			}
 			if (ctx.onSearchProgress) env.onProgress = (info: SearchInformation) => ctx.onSearchProgress!([info]);
+			// Pausing/closing during image preparation must prevent a new paid request.
+			await assertActive();
 			const searchInfos = await defaultAnswerWrapperHandler(options.answererWrappers, env);
 			// 将 AI 答案中的 [图片N] 占位符还原为对应图片 URL，使选项匹配可以命中图片选项。
 			// imageUrls 与实际上传的 env.images 严格同序（createImageSuggestion 单一数据源，含转换失败过滤）。
