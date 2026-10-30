@@ -9,6 +9,7 @@ import {
 	AI_API_KEY_STORAGE,
 	aiModelKey,
 	getAIKeyStorage,
+	getAIAuthMode,
 	listAIModels,
 	normalizeAIEndpoint,
 	searchAIAnswer,
@@ -22,6 +23,8 @@ import {
 export interface AIProviderManagerOptions {
 	read: () => AIProviderState;
 	write: (state: AIProviderState) => void;
+	/** Credential writes are intentionally separate from the serializable provider metadata. */
+	onCredentialsChange?: () => void;
 }
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -122,6 +125,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 	let endpointInput: HTMLInputElement;
 	let timeoutInput: HTMLInputElement;
 	let keyInput: HTMLInputElement;
+	let authModeInput: HTMLSelectElement;
 
 	const notify = (text: string, error = false) => {
 		status.textContent = text;
@@ -195,6 +199,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 							name,
 							preset: card.id === 'custom' ? 'openai' : card.id,
 							endpoint: card.endpoint,
+							authMode: 'api-key',
 							timeoutSeconds: 120,
 							models: [],
 							catalog: []
@@ -233,17 +238,20 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			...draft,
 			name: nameInput.value,
 			endpoint: endpointInput.value,
+			authMode: authModeInput.value as 'api-key' | 'none',
 			timeoutSeconds: Number(timeoutInput.value),
 			models: old?.models || draft.models,
 			catalog: old?.catalog || draft.catalog
 		};
 		const state = saveAISource(options.read(), next);
 		const storage = getAIKeyStorage(next.endpoint, next.id);
+		const credentialsChanged = !!keyInput.value.trim() || clearKey;
 		if (keyInput.value.trim()) GM_setValue(storage, keyInput.value.trim());
 		else if (clearKey) GM_deleteValue(storage);
 		keyInput.value = '';
 		requests.set(next.id, (requests.get(next.id) || 0) + 1);
 		options.write(state);
+		if (credentialsChanged) options.onCredentialsChange?.();
 		draft = clone(state.sources.find((source) => source.id === next.id)!);
 		dirty = false;
 		clearKey = false;
@@ -256,7 +264,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 		requests.set(source.id, requestId);
 		notify('正在获取 ' + source.name + ' 的模型列表…');
 		try {
-			const catalog = await listAIModels(source.endpoint, source.id);
+			const catalog = await listAIModels(source.endpoint, source.id, source.authMode);
 			const state = options.read();
 			const current = state.sources.find((item) => item.id === source.id);
 			if (
@@ -332,6 +340,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 				endpoint: source.endpoint,
 				providerName: source.name,
 				sourceId: source.id,
+				authMode: source.authMode,
 				model: model.id,
 				vision: model.vision,
 				extraBody: model.extraBody,
@@ -448,7 +457,13 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 				options.write(deleteAISource(options.read(), source.id));
 				requests.delete(source.id);
 				const prefix = AI_API_KEY_STORAGE + ':' + encodeURIComponent(source.id) + ':';
-				for (const key of GM_listValues()) if (key.startsWith(prefix)) GM_deleteValue(key);
+				let credentialsChanged = false;
+				for (const key of GM_listValues())
+					if (key.startsWith(prefix)) {
+						GM_deleteValue(key);
+						credentialsChanged = true;
+					}
+				if (credentialsChanged) options.onCredentialsChange?.();
 			}
 			if (source.id === selectedId) {
 				dirty = false;
@@ -506,20 +521,55 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			autocomplete: 'new-password',
 			placeholder: '输入 API Key；留空保留已有密钥'
 		});
-		let hasKey = false;
+		authModeInput = h('select', {}, [
+			h('option', { value: 'api-key' }, 'API Key'),
+			h('option', { value: 'none' }, '无需 API Key')
+		]);
 		try {
-			hasKey = !!GM_getValue(getAIKeyStorage(draft.endpoint, draft.id), '');
+			authModeInput.value = getAIAuthMode(draft);
 		} catch {
-			/* New source */
+			authModeInput.value = draft.authMode || 'api-key';
 		}
-		for (const input of [nameInput, endpointInput, timeoutInput, keyInput])
+		for (const input of [nameInput, timeoutInput])
 			input.oninput = () => {
 				dirty = true;
 			};
-		const keyStatus = h(
-			'small',
-			hasKey ? '当前接口已保存密钥，留空即可保留。' : '当前接口尚未设置密钥。本地无鉴权服务可留空。'
-		);
+		const keyStatus = h('small', { role: 'status' });
+		const updateKeyStatus = () => {
+			let hasKey = false;
+			try {
+				const noAuthAllowed = getAIAuthMode({ endpoint: endpointInput.value, authMode: 'none' }) === 'none';
+				authModeInput.querySelector<HTMLOptionElement>('[value="none"]')!.disabled = !noAuthAllowed;
+				if (!noAuthAllowed) authModeInput.value = 'api-key';
+			} catch {
+				/* A new source may not have a valid endpoint yet. */
+			}
+			try {
+				hasKey = !!String(GM_getValue(getAIKeyStorage(endpointInput.value, draft!.id), '')).trim();
+			} catch {
+				/* The source may not have a saved credential yet. */
+			}
+			keyInput.disabled = authModeInput.value === 'none';
+			keyStatus.textContent = keyInput.disabled
+				? '此接口无需 API Key，请求不携带鉴权头；已保存的密钥会保留。'
+				: keyInput.value.trim()
+				? '新密钥将在保存配置后生效。'
+				: clearKey
+				? '密钥将在保存配置后清除；重新填写前将跳过 AI 自动答题。'
+				: hasKey
+				? '当前接口已保存密钥，留空即可保留。'
+				: '当前接口尚未设置密钥，自动答题将跳过；无鉴权自定义服务请选择“无需 API Key”。';
+		};
+		for (const input of [endpointInput, keyInput])
+			input.oninput = () => {
+				dirty = true;
+				updateKeyStatus();
+			};
+		authModeInput.onchange = () => {
+			dirty = true;
+			updateKeyStatus();
+		};
+		updateKeyStatus();
 		const saved = state.sources.find((source) => source.id === draft!.id);
 		const heading = h('h3', draft.name + (saved ? '' : '（未保存）'));
 		nameInput.oninput = () => {
@@ -543,6 +593,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 				)
 			]),
 			field('提供商名称', nameInput),
+			field('鉴权方式', authModeInput),
 			field('API Key', keyInput),
 			keyStatus,
 			field('API Base URL', endpointInput),
@@ -552,7 +603,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 					clearKey = true;
 					dirty = true;
 					keyInput.value = '';
-					keyStatus.textContent = '密钥将在保存配置后清除。';
+					updateKeyStatus();
 				})
 			]),
 			renderModels(saved || draft)

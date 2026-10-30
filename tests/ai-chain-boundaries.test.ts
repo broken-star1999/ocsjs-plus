@@ -15,7 +15,12 @@ import { CommonProject } from '../packages/scripts/src/projects/common';
  * Image decoding and HTTP transport are controlled fixtures; no external request is made.
  */
 const runtime = globalThis as any;
-const config = { endpoint: 'https://offline.invalid/v1', model: 'boundary-test', vision: true };
+const config = {
+	endpoint: 'https://offline.invalid/v1',
+	model: 'boundary-test',
+	vision: true,
+	authMode: 'none' as const
+};
 const wrapper: AnswererWrapper = {
 	name: 'Offline AI',
 	url: config.endpoint,

@@ -1,5 +1,5 @@
 import type { AnswererWrapper } from '@ocsjs/core';
-import { normalizeAIEndpoint } from '@ocsjs/core';
+import { getAIConfigurationError, normalizeAIEndpoint } from '@ocsjs/core';
 import { h } from 'easy-us';
 
 export interface AIWorkStatusOptions {
@@ -38,8 +38,17 @@ export function inspectAIWorkConfiguration(options: AIWorkStatusOptions) {
 		try {
 			normalizeAIEndpoint(model.endpoint);
 			if (!model.model.trim()) error ||= '模型 ID 为空，请在提供商中重新配置。';
+			const configurationError = getAIConfigurationError(model);
+			if (configurationError) error ||= `${model.providerName || model.label || model.model}：${configurationError}`;
 		} catch {
 			error ||= '模型接口地址无效，请在提供商中重新配置。';
+		}
+	}
+	for (const config of ensembles) {
+		if (config.summary && (config.rule?.includes('summary') || config.subjectiveRule === 'summary')) {
+			const configurationError = getAIConfigurationError(config.summary);
+			if (configurationError)
+				error ||= `总结模型 ${config.summary.label || config.summary.model}：${configurationError}`;
 		}
 	}
 	const groupedModels = new Map<string, { name: string; count: number }>();

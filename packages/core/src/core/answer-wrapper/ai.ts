@@ -6,10 +6,14 @@ import { resolveAIQuestionType, AIQuestionType } from './ai-question-type';
 
 export const AI_API_KEY_STORAGE = 'ocs.ai.apiKey';
 
+export type AIAuthMode = 'api-key' | 'none';
+
 export interface AIAnswererConfig {
 	endpoint: string;
 	model: string;
 	vision: boolean;
+	/** Anonymous compatible services must opt in explicitly. */
+	authMode?: AIAuthMode;
 	sourceId?: string;
 	timeoutSeconds?: number;
 	extraBody?: Record<string, unknown>;
@@ -79,16 +83,46 @@ export function getAIKeyStorage(endpoint: string, sourceId?: string): string {
 	);
 }
 
+export function getAIAuthMode(config: { endpoint: string; authMode?: AIAuthMode }): AIAuthMode {
+	const host = new URL(normalizeAIEndpoint(config.endpoint)).hostname;
+	if (config.authMode !== undefined && config.authMode !== 'api-key' && config.authMode !== 'none') {
+		throw new Error('AI 鉴权方式无效，请重新保存提供商配置');
+	}
+	if (['api.deepseek.com', 'api.xiaomimimo.com', 'api.openai.com'].includes(host)) return 'api-key';
+	return config.authMode || 'api-key';
+}
+
+function readAIKey(endpoint: string, sourceId?: string): string {
+	const value = typeof GM_getValue === 'undefined' ? '' : GM_getValue(getAIKeyStorage(endpoint, sourceId), '');
+	return typeof value === 'string' ? value.trim() : '';
+}
+
+/** Only checks local configuration; never makes a network request or exposes a credential. */
+export function getAIConfigurationError(config: AIAnswererConfig): string {
+	try {
+		normalizeAIEndpoint(config.endpoint);
+		if (!config.model?.trim()) return '模型 ID 为空，请在提供商中重新配置。';
+		if (getAIAuthMode(config) === 'api-key' && !readAIKey(config.endpoint, config.sourceId)) {
+			return '尚未填写 API Key，请在模型提供商中保存密钥；无需鉴权的自定义接口请选择“无需 API Key”。';
+		}
+		return '';
+	} catch (error) {
+		return error instanceof Error ? error.message : '无法读取 AI 接口配置，请重新保存提供商。';
+	}
+}
+
 async function requestAIJSON(
 	url: string,
 	endpoint: string,
 	timeoutMs: number,
 	body?: object,
-	sourceId?: string
+	sourceId?: string,
+	authMode?: AIAuthMode
 ): Promise<any> {
+	const requiresKey = getAIAuthMode({ endpoint, authMode }) === 'api-key';
+	const key = requiresKey ? readAIKey(endpoint, sourceId) : '';
+	if (requiresKey && !key) throw new Error('尚未填写 API Key，本次未请求 AI。请保存密钥或选择“无需 API Key”。');
 	if (typeof GM_xmlhttpRequest === 'undefined') throw new Error('AI 请求需要脚本猫或 Tampermonkey');
-	const key =
-		typeof GM_getValue === 'undefined' ? '' : String(GM_getValue(getAIKeyStorage(endpoint, sourceId), '')).trim();
 	return new Promise((resolve, reject) => {
 		GM_xmlhttpRequest({
 			url,
@@ -123,9 +157,9 @@ async function requestAIJSON(
 	});
 }
 
-export async function listAIModels(endpoint: string, sourceId?: string): Promise<AIModel[]> {
+export async function listAIModels(endpoint: string, sourceId?: string, authMode?: AIAuthMode): Promise<AIModel[]> {
 	const url = normalizeAIEndpoint(endpoint).replace(/\/chat\/completions$/, '/models');
-	const response = await requestAIJSON(url, endpoint, 20_000, undefined, sourceId);
+	const response = await requestAIJSON(url, endpoint, 20_000, undefined, sourceId, authMode);
 	if (!Array.isArray(response?.data)) throw new Error('模型列表格式错误：需要 data 数组');
 	const seen = new Set<string>();
 	const models: AIModel[] = [];
@@ -437,7 +471,8 @@ export async function searchAIAnswer(
 			config.endpoint,
 			config.timeoutSeconds === undefined ? timeoutMs : config.timeoutSeconds * 1000,
 			buildAIRequest(config, question),
-			config.sourceId
+			config.sourceId,
+			config.authMode
 		);
 		record.usage = readAIUsage(response?.usage);
 		const choice = response?.choices?.[0];

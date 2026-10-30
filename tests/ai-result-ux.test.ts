@@ -15,7 +15,13 @@ import { SearchInfosElement } from '../packages/scripts/src/elements/search.info
 const runtime = globalThis as any;
 runtime.GM_getValue = () => '';
 const question = { type: 'single', title: '请选择正确答案。', options: '甲\n乙', option_count: 2 };
-const model = (id: string) => ({ model: id, label: id, endpoint: 'https://offline.example/v1', vision: true });
+const model = (id: string) => ({
+	model: id,
+	label: id,
+	endpoint: 'https://offline.example/v1',
+	vision: true,
+	authMode: 'none' as const
+});
 const base: AIEnsembleConfig = { models: ['a', 'b', 'c'].map(model), repeat: true, rule: 'confidence', threshold: 100 };
 let requests: any[] = [];
 function install(reply: (model: string, index: number) => string[] | 'error', hold = false) {

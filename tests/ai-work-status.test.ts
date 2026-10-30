@@ -13,6 +13,7 @@ const state: AIProviderState = {
 			id: 'test',
 			name: '测试服务',
 			preset: 'openai',
+			authMode: 'none',
 			endpoint: 'https://test.invalid/v1',
 			timeoutSeconds: 10,
 			catalog: [],

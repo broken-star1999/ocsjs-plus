@@ -20,6 +20,7 @@ const state: AIProviderState = {
 			name: 'Offline',
 			preset: 'openai',
 			endpoint: 'https://offline.example/v1',
+			authMode: 'none',
 			timeoutSeconds: 10,
 			catalog: [],
 			models: ['a', 'b', 'summary'].map((id) => ({ id, name: id, enabled: true, vision: true, extraBody: {} }))

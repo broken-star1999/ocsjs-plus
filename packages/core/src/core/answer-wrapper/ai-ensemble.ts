@@ -1,4 +1,10 @@
-import { AIAnswererConfig, AIOptionItem, getAIQuestionOptionTexts, searchAIAnswer } from './ai';
+import {
+	AIAnswererConfig,
+	AIOptionItem,
+	getAIConfigurationError,
+	getAIQuestionOptionTexts,
+	searchAIAnswer
+} from './ai';
 import type { SearchInformation } from './interface';
 import type { AICallDetails } from './ai-call-log';
 import { isJudgementOptions, resolveJudgement } from '../worker/resolvers/judgement';
@@ -152,6 +158,14 @@ export async function searchAIEnsemble(
 	if (config.error || config.models.length < 2 || (!config.repeat && new Set(identities).size !== identities.length)) {
 		info.error = ensemble.reason = config.error || '联合答题至少选择两个不同的有效模型，请检查设置。';
 		return finish();
+	}
+	const activeModels = [...config.models, ...(rule.includes('summary') && config.summary ? [config.summary] : [])];
+	for (const model of activeModels) {
+		const error = getAIConfigurationError(model);
+		if (error) {
+			info.error = ensemble.reason = `${model.providerName || model.label || model.model}：${error}`;
+			return finish();
+		}
 	}
 	if (
 		rule === 'selected' &&
