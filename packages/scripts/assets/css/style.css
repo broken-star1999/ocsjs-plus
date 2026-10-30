@@ -1538,11 +1538,16 @@ modal-element .modal-confirm-button:disabled {
 }
 /** ===== 搜索结果样式（从 easy-us 迁移，仅 OCS 项目使用） ===== */
 container-element.normal {
+  display: flex;
+  flex-direction: column;
   max-width: min(640px, calc(100vw - 32px));
   min-width: min(300px, calc(100vw - 32px));
+  max-height: min(800px, calc(100vh - 32px));
+  max-height: min(800px, calc(100dvh - 32px));
   box-sizing: border-box;
 }
 container-element.normal > header-element {
+  flex: none;
   min-width: 0;
 }
 container-element.normal > header-element .header-menu-bar {
@@ -1563,8 +1568,13 @@ container-element.normal > header-element .extra-menu-bar {
   flex-wrap: wrap;
 }
 container-element.normal > .body {
+  flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
+  height: auto;
   max-width: 100% !important;
+  max-height: none !important;
+  overflow: auto;
   overflow-wrap: anywhere;
 }
 container-element.normal > .body > script-panel-element {
@@ -1595,6 +1605,9 @@ container-element.normal > .body > script-panel-element .config-provider-contain
 }
 container-element.normal > .body > script-panel-element .config-provider-container {
   flex-wrap: wrap;
+}
+container-element.normal > .footer {
+  flex: none;
 }
 @media (max-width: 600px) {
   container-element.normal > .body > script-panel-element .configs {
