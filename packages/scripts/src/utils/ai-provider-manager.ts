@@ -622,6 +622,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 	const modal: HTMLDivElement | undefined = $modal.simple({
 		title: '模型提供商',
 		width: 1000,
+		modalStyle: { maxWidth: 'calc(100vw - 32px)', boxSizing: 'border-box' },
 		content: root,
 		footer: h('div', {}, [
 			button('关闭', () => {
