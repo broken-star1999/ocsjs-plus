@@ -4,7 +4,7 @@ import { AnswerWrapperHandlerConfig } from '../packages/core/src/core/answer-wra
 import { CommonProject } from '../packages/scripts/src/projects/common';
 import { BackgroundProject } from '../packages/scripts/src/projects/background';
 import { isAIQuestionCacheSource } from '../packages/scripts/src/utils/question-cache';
-import { $store } from 'easy-us';
+import { $, $store } from 'easy-us';
 
 let checks = 0;
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,6 +36,93 @@ function deferred() {
 }
 
 async function main() {
+	await test('fresh upload settings use 80 percent while existing explicit settings are preserved', () => {
+		const originalGet = $store.get;
+		const originalSet = $store.set;
+		const stored = new Map<string, unknown>();
+		$store.get = ((key: string, fallback: unknown) => (stored.has(key) ? stored.get(key) : fallback)) as any;
+		$store.set = ((key: string, value: unknown) => stored.set(key, value)) as any;
+		try {
+			const initialize = () =>
+				$.createConfigProxy({
+					namespace: 'test.upload-default',
+					configs: { upload: CommonProject.scripts.settings.configs.upload },
+					cfg: {}
+				} as any);
+			assert.equal(initialize().upload, 80);
+			for (const choice of ['save', 'nomove', 100]) {
+				stored.set('test.upload-default.upload', choice);
+				assert.equal(initialize().upload, choice);
+			}
+		} finally {
+			$store.get = originalGet;
+			$store.set = originalSet;
+		}
+	});
+	await test('default upload policy submits at 80 percent of successful fills after answering finishes', () => {
+		const type = CommonProject.scripts.settings.configs.upload.defaultValue;
+		assert.equal(type, 80);
+		const worker = new OCSWorker({
+			root: [],
+			elements: { title: 'h3', options: 'label' },
+			answerer: async () => [],
+			work: { type: 'single', handler: () => {} }
+		});
+		for (const finished of [0, 79, 80, 81, 100]) {
+			const calls: [number, boolean][] = [];
+			worker.uploadHandler({
+				type,
+				results: Array.from({ length: 100 }, (_, index) => ({
+					requested: true,
+					resolved: true,
+					ctx: { searchInfos: [{ name: 'found', results: [{ question: 'q', answer: 'A' }] }] },
+					result: { finish: index < finished }
+				})) as any,
+				callback: (rate, uploadable) => {
+					calls.push([rate, uploadable]);
+				}
+			});
+			assert.deepEqual(calls, [[finished, finished >= 80]], `successful fills: ${finished}/100`);
+		}
+		const emptyCalls: [number, boolean][] = [];
+		worker.uploadHandler({
+			type,
+			results: [],
+			callback: (rate, uploadable) => {
+				emptyCalls.push([rate, uploadable]);
+			}
+		});
+		assert.deepEqual(emptyCalls, [[0, false]]);
+	});
+	await test('default 80 percent upload still waits for pending human review and respects worker closure', () => {
+		const worker = new OCSWorker({
+			root: [],
+			elements: { title: 'h3', options: 'label' },
+			answerer: async () => [],
+			work: { type: 'single', handler: () => {} }
+		});
+		const results: any[] = Array.from({ length: 5 }, (_, index) => ({
+			ctx: { searchInfos: [] },
+			result: { finish: index < 4 }
+		}));
+		results[4].ctx.searchInfos = [
+			{ name: 'AI', results: [], ensemble: { status: 'review', reason: '模型答案不一致', members: [] } }
+		];
+		let calls = 0;
+		const options = {
+			type: CommonProject.scripts.settings.configs.upload.defaultValue,
+			results,
+			callback: () => {
+				calls++;
+			}
+		};
+		worker.uploadHandler(options);
+		assert.equal(calls, 0, '80 percent filled must not bypass a pending review');
+		results[4].ctx.searchInfos = [];
+		worker.isClose = true;
+		worker.uploadHandler(options);
+		assert.equal(calls, 0, 'closed worker must not save or submit');
+	});
 	for (const [name, source] of [
 		['native metadata', { results: [['question', 'B', { ai_native: true, answers: ['B'] }]] }],
 		['AI metadata', { results: [['question', 'B', { ai: true }]] }],

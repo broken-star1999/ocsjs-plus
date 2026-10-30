@@ -1030,7 +1030,7 @@ export const CommonProject = Project.create({
 				upload: {
 					label: '答案提交方式（提交率）',
 					tag: 'select',
-					defaultValue: 'save' as WorkUploadType,
+					defaultValue: 80 as WorkUploadType,
 					options: [
 						[
 							'save',
