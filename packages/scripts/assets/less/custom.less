@@ -353,13 +353,18 @@ modal-element {
 }
 
 /** ===== 搜索结果样式（从 easy-us 迁移，仅 OCS 项目使用） ===== */
-// 主悬浮窗按内容取宽，但不让题目、图片或长答案决定无限宽度。
+// 主悬浮窗按内容取尺寸，长内容在正文内滚动，不撑大外框。
 container-element.normal {
+	display: flex;
+	flex-direction: column;
 	max-width: min(640px, calc(100vw - 32px));
 	min-width: min(300px, calc(100vw - 32px));
+	max-height: min(800px, calc(100vh - 32px));
+	max-height: min(800px, calc(100dvh - 32px));
 	box-sizing: border-box;
 
 	> header-element {
+		flex: none;
 		min-width: 0;
 		.header-menu-bar {
 			flex-wrap: wrap;
@@ -381,8 +386,13 @@ container-element.normal {
 	}
 
 	> .body {
+		flex: 1 1 auto;
 		min-width: 0;
+		min-height: 0;
+		height: auto;
 		max-width: 100% !important; // 覆盖 easy-us 写入的视口宽度上限，正文跟随外框。
+		max-height: none !important; // 高度由外框扣除实际顶栏后分配，不沿用 easy-us 的行内估算。
+		overflow: auto;
 		overflow-wrap: anywhere;
 
 		> script-panel-element {
@@ -414,6 +424,10 @@ container-element.normal {
 				flex-wrap: wrap;
 			}
 		}
+	}
+
+	> .footer {
+		flex: none;
 	}
 }
 
