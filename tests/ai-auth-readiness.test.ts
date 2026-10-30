@@ -86,9 +86,9 @@ function providerManagerFixture(initial: AIProviderState) {
 			await button.onclick!(new MouseEvent('click'));
 		},
 		mode(value: 'api-key' | 'none') {
-			const field = popup.querySelector<HTMLSelectElement>('[aria-label="鉴权方式"]');
-			assert.ok(field, 'provider auth mode is accessible');
-			field.value = value;
+			const field = popup.querySelector<HTMLInputElement>('[role="switch"][aria-label="无需 API Key"]');
+			assert.ok(field, 'provider no-key switch is accessible');
+			field.checked = value === 'none';
 			field.onchange!(new Event('change'));
 		},
 		typeKey(value: string) {
@@ -450,11 +450,20 @@ async function main() {
 			assert.equal(stored.get(getAIKeyStorage(provider.endpoint, provider.id)), 'offline-fixture-key');
 			fixture.root().remove();
 			fixture.open();
-			assert.equal(fixture.root().querySelector<HTMLSelectElement>('[aria-label="鉴权方式"]')!.value, 'none');
+			assert.equal(fixture.root().querySelector<HTMLInputElement>('[role="switch"]')!.checked, true);
+			assert.equal(fixture.root().querySelector('[role="switch"]')!.getAttribute('aria-checked'), 'true');
 			assert.match(fixture.root().textContent || '', /不携带鉴权头/);
 			await fixture.press('保存并获取模型');
 			assert.equal(requests.length, 1);
 			assert.equal(requests[0].headers.Authorization, undefined, 'none must not send a retained old key');
+			fixture.mode('api-key');
+			assert.equal(fixture.root().querySelector<HTMLInputElement>('input[type="password"]')!.disabled, false);
+			await fixture.press('保存配置');
+			assert.equal(fixture.read().sources[0].authMode, 'api-key');
+			assert.equal(stored.get(getAIKeyStorage(provider.endpoint, provider.id)), 'offline-fixture-key');
+			fixture.root().remove();
+			fixture.open();
+			assert.equal(fixture.root().querySelector<HTMLInputElement>('[role="switch"]')!.checked, false);
 		} finally {
 			fixture.cleanup();
 		}
@@ -485,11 +494,12 @@ async function main() {
 		provider.endpoint = 'https://api.deepseek.com';
 		const fixture = providerManagerFixture(state(provider));
 		try {
-			const select = fixture.root().querySelector<HTMLSelectElement>('[aria-label="鉴权方式"]')!;
-			assert.equal(select.value, 'api-key');
-			assert.equal(select.querySelector<HTMLOptionElement>('[value="none"]')!.disabled, true);
+			const toggle = fixture.root().querySelector<HTMLInputElement>('[role="switch"]')!;
+			assert.equal(toggle.checked, false);
+			assert.equal(toggle.disabled, true);
 			fixture.mode('none');
-			assert.equal(select.value, 'api-key');
+			assert.equal(toggle.checked, false);
+			assert.equal(toggle.getAttribute('aria-checked'), 'false');
 			assert.equal(fixture.root().querySelector<HTMLInputElement>('input[type="password"]')!.disabled, false);
 		} finally {
 			fixture.cleanup();

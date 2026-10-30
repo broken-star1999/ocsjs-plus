@@ -86,6 +86,10 @@ const style = `
 .ocs-ai-manager .model-controls{display:flex;gap:8px;flex-wrap:wrap}
 .ocs-ai-manager .field{display:grid;grid-template-columns:110px minmax(0,1fr);gap:12px;align-items:center;margin:12px 0}
 .ocs-ai-manager .field input,.ocs-ai-manager .field select,.ocs-ai-manager textarea,.ocs-ai-manager .search{width:100%;min-width:0;padding:8px;border:1px solid #cdd5e0;border-radius:7px;color:inherit;background:transparent}
+.ocs-ai-manager .auth-toggle{display:flex;align-items:center;gap:10px;margin:8px 0 12px 122px;font-size:13px;cursor:pointer}
+.ocs-ai-manager .auth-toggle .base-style-switch{flex:0 0 48px;width:48px;margin:0;cursor:pointer}
+.ocs-ai-manager .auth-toggle input:focus-visible{outline:2px solid #4263eb;outline-offset:3px}
+.ocs-ai-manager .auth-toggle input:disabled{cursor:not-allowed;opacity:.55}
 .ocs-ai-manager .actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.ocs-ai-manager .model-row{border-top:1px solid #e2e8f0;padding:10px 0;flex-wrap:nowrap}
 .ocs-ai-manager .model-name{flex:1;min-width:0;overflow-wrap:anywhere}.ocs-ai-manager .badge{font-size:12px;color:#4263eb;margin-left:8px}
 .ocs-ai-manager .status{padding:10px 12px;background:#4263eb0d;border-radius:7px;margin-bottom:14px;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -99,7 +103,7 @@ const style = `
 .ocs-ai-picker .provider-icon{display:grid;place-items:center;flex:0 0 42px;width:42px;height:42px;border-radius:12px;font-size:18px;font-weight:700;background:#4263eb12;color:#4263eb}
 .ocs-ai-picker .provider-icon.mimo{background:#ff690014;color:#e65e00;font-size:24px}.ocs-ai-picker .provider-icon.openai{background:#10977f14;color:#10977f}.ocs-ai-picker .provider-icon.custom{background:#71809614;color:#718096;font-size:28px;font-weight:400}
 .ocs-ai-picker .picker-note{margin:16px 0 0;line-height:1.6}.ocs-ai-picker .picker-empty{grid-column:1/-1;padding:28px 8px;text-align:center}
-@media(max-width:700px){.ocs-ai-manager .workbench{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.ocs-ai-manager aside{border:0;max-height:130px}.ocs-ai-manager .field{grid-template-columns:1fr;gap:4px}.ocs-ai-manager .model-row{flex-wrap:wrap}}
+@media(max-width:700px){.ocs-ai-manager .workbench{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.ocs-ai-manager aside{border:0;max-height:130px}.ocs-ai-manager .field{grid-template-columns:1fr;gap:4px}.ocs-ai-manager .auth-toggle{margin-left:0}.ocs-ai-manager .model-row{flex-wrap:wrap}}
 @media(max-width:480px){.ocs-ai-picker .provider-grid{grid-template-columns:1fr}.ocs-ai-picker .provider-card{min-height:80px;padding:12px}}
 @media(hover:none){.ocs-ai-manager .source-remove{opacity:1;visibility:visible;pointer-events:auto}}
 `;
@@ -125,7 +129,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 	let endpointInput: HTMLInputElement;
 	let timeoutInput: HTMLInputElement;
 	let keyInput: HTMLInputElement;
-	let authModeInput: HTMLSelectElement;
+	let noKeyInput: HTMLInputElement;
 
 	const notify = (text: string, error = false) => {
 		status.textContent = text;
@@ -238,7 +242,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			...draft,
 			name: nameInput.value,
 			endpoint: endpointInput.value,
-			authMode: authModeInput.value as 'api-key' | 'none',
+			authMode: noKeyInput.checked ? 'none' : 'api-key',
 			timeoutSeconds: Number(timeoutInput.value),
 			models: old?.models || draft.models,
 			catalog: old?.catalog || draft.catalog
@@ -521,14 +525,13 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			autocomplete: 'new-password',
 			placeholder: '输入 API Key；留空保留已有密钥'
 		});
-		authModeInput = h('select', {}, [
-			h('option', { value: 'api-key' }, 'API Key'),
-			h('option', { value: 'none' }, '无需 API Key')
-		]);
+		noKeyInput = h('input', { type: 'checkbox', className: 'base-style-switch' });
+		noKeyInput.setAttribute('role', 'switch');
+		noKeyInput.setAttribute('aria-label', '无需 API Key');
 		try {
-			authModeInput.value = getAIAuthMode(draft);
+			noKeyInput.checked = getAIAuthMode(draft) === 'none';
 		} catch {
-			authModeInput.value = draft.authMode || 'api-key';
+			noKeyInput.checked = draft.authMode === 'none';
 		}
 		for (const input of [nameInput, timeoutInput])
 			input.oninput = () => {
@@ -539,8 +542,9 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			let hasKey = false;
 			try {
 				const noAuthAllowed = getAIAuthMode({ endpoint: endpointInput.value, authMode: 'none' }) === 'none';
-				authModeInput.querySelector<HTMLOptionElement>('[value="none"]')!.disabled = !noAuthAllowed;
-				if (!noAuthAllowed) authModeInput.value = 'api-key';
+				noKeyInput.disabled = !noAuthAllowed;
+				noKeyInput.title = noAuthAllowed ? '仅用于本身无需密钥的自定义服务' : '该官方接口需要 API Key';
+				if (!noAuthAllowed) noKeyInput.checked = false;
 			} catch {
 				/* A new source may not have a valid endpoint yet. */
 			}
@@ -549,7 +553,8 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			} catch {
 				/* The source may not have a saved credential yet. */
 			}
-			keyInput.disabled = authModeInput.value === 'none';
+			noKeyInput.setAttribute('aria-checked', String(noKeyInput.checked));
+			keyInput.disabled = noKeyInput.checked;
 			keyStatus.textContent = keyInput.disabled
 				? '此接口无需 API Key，请求不携带鉴权头；已保存的密钥会保留。'
 				: keyInput.value.trim()
@@ -558,14 +563,14 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 				? '密钥将在保存配置后清除；重新填写前将跳过 AI 自动答题。'
 				: hasKey
 				? '当前接口已保存密钥，留空即可保留。'
-				: '当前接口尚未设置密钥，自动答题将跳过；无鉴权自定义服务请选择“无需 API Key”。';
+				: '当前接口尚未设置密钥，自动答题将跳过；无鉴权自定义服务请开启“无需 API Key”。';
 		};
 		for (const input of [endpointInput, keyInput])
 			input.oninput = () => {
 				dirty = true;
 				updateKeyStatus();
 			};
-		authModeInput.onchange = () => {
+		noKeyInput.onchange = () => {
 			dirty = true;
 			updateKeyStatus();
 		};
@@ -593,8 +598,8 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 				)
 			]),
 			field('提供商名称', nameInput),
-			field('鉴权方式', authModeInput),
 			field('API Key', keyInput),
+			h('label', { className: 'auth-toggle' }, [noKeyInput, h('span', '无需 API Key')]),
 			keyStatus,
 			field('API Base URL', endpointInput),
 			field('超时（秒）', timeoutInput),
