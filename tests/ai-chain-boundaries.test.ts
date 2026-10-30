@@ -310,7 +310,7 @@ async function main() {
 		assert.match(payload().options, /\[图片2\]/);
 		const content = JSON.parse(aiRequests[0].data).messages[1].content;
 		assert.deepEqual(
-			content.slice(1).map((part: any) => part.image_url.url),
+			content.filter((part: any) => part.type === 'image_url').map((part: any) => part.image_url.url),
 			env.images
 		);
 	});

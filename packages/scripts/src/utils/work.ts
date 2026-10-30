@@ -21,6 +21,7 @@ import {
 	createImageSuggestion,
 	imageToBase64,
 	ImageSuggestionResult,
+	AnswererOptionItem,
 	isAnswererWrappersSupportImageOptimize
 } from './answerer-env';
 
@@ -512,23 +513,27 @@ export const closeAnswerWrapperEmptyWarning = cors.defineTopFunction(() => {
 	answererWrapperUnsetMessage = undefined;
 });
 
+interface AnswererTextResult {
+	text: string;
+	images?: string[];
+	items?: AnswererOptionItem[];
+}
+
 /**
  * 创建通用的 answerer 回调，封装搜题缓存、延迟、env 构建、AI 图片建议等公共逻辑
- * @param options.titleTransform 标题转换函数，接收 (elements, ctx)，返回字符串标题
- * @param options.optionsTransform 选项转换函数（可选），接收 (elements, ctx)，返回选项文本字符串；
- *   默认取 ctx.elements.options 的 innerText 拼接
+ * @param options.titleTransform 标题处理方法，接收元素及题目上下文
+ * @param options.optionsTransform 选项处理方法；可保留逐项 items，不从合并文本重新拆分选项
+ *   默认保留 innerText 作为原有题库文本，另从真实 DOM 提取客观题分组与图片
  * @param options.answererWrappers 题库配置
  * @param options.period 搜题间隔（秒），默认 1
  */
 export function createCommonAnswerer(options: {
 	titleTransform: (elements: any, ctx: WorkContext<any>) => string | { text: string; images?: string[] };
-	optionsTransform?: (elements: any, ctx: WorkContext<any>) => string | { text: string; images?: string[] };
+	optionsTransform?: (elements: any, ctx: WorkContext<any>) => string | AnswererTextResult;
 	answererWrappers: AnswererWrapper[];
 	period?: number;
 }) {
-	const normalize = (
-		v: string | { text: string; images?: string[] } | undefined
-	): { text: string; images?: string[] } => {
+	const normalize = (v: string | AnswererTextResult | undefined): AnswererTextResult => {
 		if (v == null) return { text: '' };
 		return typeof v === 'string' ? { text: v } : v;
 	};
@@ -564,13 +569,20 @@ export function createCommonAnswerer(options: {
 
 		const search = async () => {
 			await $.sleep((options.period ?? 1) * 1000);
+			const defaultOptions: HTMLElement[] | undefined = !options.optionsTransform
+				? (ctx.elements.options ?? []).filter((option): option is HTMLElement => !!option)
+				: undefined;
+			const defaultItems =
+				defaultOptions && ['single', 'multiple', 'judgement'].includes(ctx.type || '')
+					? defaultOptions.map((option) => extractTextWithImages(option))
+					: undefined;
 			const optResult = normalize(
 				options.optionsTransform
 					? options.optionsTransform(elements, ctx)
-					: (ctx.elements.options ?? [])
-							.filter(Boolean)
-							.map((o: HTMLElement | undefined) => o!.innerText)
-							.join('\n')
+					: {
+							text: defaultOptions!.map((option) => option.innerText).join('\n'),
+							...(defaultItems ? { images: defaultItems.flatMap((item) => item.images), items: defaultItems } : {})
+					  }
 			);
 			const questionHasImages =
 				(titleImages?.length ?? 0) + (optResult.images?.length ?? 0) > 0 ||
@@ -590,6 +602,7 @@ export function createCommonAnswerer(options: {
 				options: optResult.text,
 				titleImages,
 				optionsImages: optResult.images,
+				optionItems: ['single', 'multiple', 'judgement'].includes(ctx.type || '') ? optResult.items : undefined,
 				enableImageOptimize: CommonProject.scripts.settings.cfg.imageOptimize
 			});
 			// 已开启优化但全部图片转换失败（CORS/防盗链极端情况）：此前静默回退普通题，显式提示

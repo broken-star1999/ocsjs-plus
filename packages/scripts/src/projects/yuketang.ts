@@ -792,19 +792,20 @@ function createYktAnswerWorker({
 			.join(',');
 
 	/** 选项文本：取选项内容部分（去掉 A/B/C/D 字母与勾选框） */
-	const optionText = (option: HTMLElement) => {
+	const optionExtract = (option: HTMLElement) => {
 		// 判断题选项为 √/× 图标（无文本，input value="true/false"），
 		// 用 value 合成文本供默认答案解析器匹配（对/错词表）
 		const input = option.querySelector('input');
 		if (input?.value === 'true') {
-			return '对';
+			return { text: '对', images: [] };
 		}
 		if (input?.value === 'false') {
-			return '错';
+			return { text: '错', images: [] };
 		}
 		const textEl = option.querySelector('.radioText, .checkboxText');
-		return extractTextWithImages((textEl as HTMLElement) ?? option).text;
+		return extractTextWithImages((textEl as HTMLElement) ?? option);
 	};
+	const optionText = (option: HTMLElement) => optionExtract(option).text;
 
 	// OCSWorker 的 root 传字符串时会在【全局 document】上查询，
 	// 而雨课堂作业在 iframe 内（AI学伴课程页内嵌 iframe-exercise），
@@ -858,7 +859,12 @@ function createYktAnswerWorker({
 				if (ctx.type === 'completion') {
 					return '';
 				}
-				return (elements.options ?? []).map((o: HTMLElement) => optionText(o)).join('\n');
+				const items = (elements.options ?? []).map((o: HTMLElement) => optionExtract(o));
+				return {
+					text: items.map((item: { text: string }) => item.text).join('\n'),
+					images: items.flatMap((item: { images: string[] }) => item.images),
+					items
+				};
 			},
 			answererWrappers,
 			period

@@ -2633,7 +2633,8 @@ function gxkWorkAndExam(
 				const optResults = (ctx.elements.options ?? []).filter(Boolean).map((o: any) => optionExtract(o));
 				return {
 					text: optResults.map((r: { text: string }) => r.text).join('\n'),
-					images: optResults.flatMap((r: { images: string[] }) => r.images)
+					images: optResults.flatMap((r: { images: string[] }) => r.images),
+					items: optResults
 				};
 			},
 			answererWrappers,
@@ -2868,7 +2869,8 @@ function smartWork(
 				const optResults = (ctx.elements.options ?? []).filter(Boolean).map((o: any) => extractTextWithImages(o));
 				return {
 					text: optResults.map((r: { text: string }) => r.text).join('\n'),
-					images: optResults.flatMap((r: { images: string[] }) => r.images)
+					images: optResults.flatMap((r: { images: string[] }) => r.images),
+					items: optResults
 				};
 			},
 			answererWrappers,
@@ -3013,7 +3015,8 @@ function smartExam(
 				const optResults = (ctx.elements.options ?? []).filter(Boolean).map((o: any) => extractTextWithImages(o));
 				return {
 					text: optResults.map((r: { text: string }) => r.text).join('\n'),
-					images: optResults.flatMap((r: { images: string[] }) => r.images)
+					images: optResults.flatMap((r: { images: string[] }) => r.images),
+					items: optResults
 				};
 			},
 			answererWrappers,

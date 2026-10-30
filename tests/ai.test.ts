@@ -50,7 +50,9 @@ async function main() {
 		{ ...config, vision: true },
 		{ ...question, images: ['data:image/png;base64,AA=='], suggestion_title: '[图片1]' }
 	);
-	assert.equal((vision.messages[1].content as any[])[1].image_url.url, 'data:image/png;base64,AA==');
+	const visionParts = vision.messages[1].content as any[];
+	assert.equal(visionParts.filter((part) => part.type === 'image_url')[0].image_url.url, 'data:image/png;base64,AA==');
+	assert.match(visionParts[1].text, /\[图片1\]/);
 	assert.equal(parseAIAnswer('{"answers":["2"],"uncertain":false}', 'single'), '2');
 	assert.equal(parseAIAnswer('{"answers":["D"],"uncertain":false}', 'single'), 'D');
 	assert.equal(parseAIAnswer('{"answers":["AC"],"uncertain":false}', 'multiple'), 'AC');

@@ -761,7 +761,8 @@ function workAndExam(
 				const optResults = ctx.elements.options.map((o: any) => extractTextWithImages(o));
 				return {
 					text: optResults.map((r: { text: string }) => r.text).join('\n'),
-					images: optResults.flatMap((r: { images: string[] }) => r.images)
+					images: optResults.flatMap((r: { images: string[] }) => r.images),
+					items: optResults
 				};
 			},
 			answererWrappers,
@@ -925,7 +926,8 @@ function chapter_v2(
 				const optResults = ctx.elements.options.map((o: any) => extractTextWithImages(o));
 				return {
 					text: optResults.map((r: { text: string }) => r.text).join('\n'),
-					images: optResults.flatMap((r: { images: string[] }) => r.images)
+					images: optResults.flatMap((r: { images: string[] }) => r.images),
+					items: optResults
 				};
 			},
 			answererWrappers,

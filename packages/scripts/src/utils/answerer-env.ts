@@ -12,6 +12,12 @@ export interface ImageSuggestionResult {
 	suggestion_options?: string;
 }
 
+/** A page option before flattening; its internal newlines and repeated content are significant. */
+export interface AnswererOptionItem {
+	text: string;
+	images?: string[];
+}
+
 /** 是否运行在 Node 环境（非浏览器 / 非油猴脚本） */
 function isNodeEnv(): boolean {
 	return (
@@ -196,6 +202,14 @@ function questionImageUrls(title: string, options?: string, titleImages?: string
 	return { titleUrls, optionUrls, allUrls: [...new Set([...titleUrls, ...optionUrls])] };
 }
 
+function replaceImageUrls(text: string, refs: ReadonlyMap<string, string>): string {
+	// Replace longer URLs first so a.png cannot consume the prefix of a.png?x=1; numbering stays unchanged.
+	for (const [url, ref] of [...refs].sort(([left], [right]) => right.length - left.length)) {
+		text = text.split(url).join(` ${ref} `);
+	}
+	return text;
+}
+
 export async function createImageSuggestion(
 	title: string,
 	options?: string,
@@ -245,7 +259,7 @@ export async function createImageSuggestion(
 				continue;
 			}
 		}
-		placeholderMap.set(url, ` [图片${images.length + 1}] `);
+		placeholderMap.set(url, `[图片${images.length + 1}]`);
 		images.push(normalized);
 		urls.push(url);
 	}
@@ -253,20 +267,14 @@ export async function createImageSuggestion(
 	if (images.length === 0) return undefined;
 
 	// 标题：URL 替换为 [图片N] 占位符（不含 base64）
-	let suggestionTitle = title;
-	for (const [url, placeholder] of placeholderMap) {
-		suggestionTitle = suggestionTitle.split(url).join(placeholder);
-	}
+	const suggestionTitle = replaceImageUrls(title, placeholderMap);
 
 	// 选项：URL 替换为 [图片N] 占位符（不含 base64），仅当选项含图片时返回
 	let suggestionOptions: string | undefined;
 	if (options) {
 		const hasOptionImages = optionUrls.some((url) => base64Map.has(url));
 		if (hasOptionImages) {
-			suggestionOptions = options;
-			for (const [url, placeholder] of placeholderMap) {
-				suggestionOptions = suggestionOptions!.split(url).join(placeholder);
-			}
+			suggestionOptions = replaceImageUrls(options, placeholderMap);
 		}
 	}
 
@@ -287,6 +295,8 @@ export async function buildAnswererEnv(params: {
 	titleImages?: string[];
 	/** DOM 调用方传入的选项图片 URL（跳过正则提取） */
 	optionsImages?: string[];
+	/** Ordered DOM option groups; never reconstructed by splitting the merged options text. */
+	optionItems?: AnswererOptionItem[];
 	enableImageOptimize?: boolean;
 }): Promise<{
 	env: Record<string, any>;
@@ -304,12 +314,24 @@ export async function buildAnswererEnv(params: {
 		title: params.title,
 		options
 	};
-	const expectedImages = questionImageUrls(params.title, options, params.titleImages, params.optionsImages).allUrls
-		.length;
+	const isChoiceQuestion = ['single', 'multiple', 'judgement'].includes(params.type || '');
+	const optionImages = [
+		...(params.optionsImages?.length ? params.optionsImages : options.match(IMAGE_URL_REGEX) || []),
+		...(isChoiceQuestion
+			? params.optionItems?.flatMap((item) => item.images ?? item.text.match(IMAGE_URL_REGEX) ?? []) || []
+			: [])
+	];
+	const sourceImages = questionImageUrls(params.title, options, params.titleImages, optionImages);
+	const expectedImages = sourceImages.allUrls.length;
 	if (expectedImages) env.expected_image_count = expectedImages;
 	let imageUrls: string[] = [];
 	if (params.enableImageOptimize) {
-		const suggestion = await createImageSuggestion(params.title, options, params.titleImages, params.optionsImages);
+		const suggestion = await createImageSuggestion(
+			params.title,
+			options,
+			sourceImages.titleUrls,
+			sourceImages.optionUrls
+		);
 		if (suggestion) {
 			// 新增独立字段，由题库配置（v2）显式引用后才会被提交
 			// 注意：env.images 不做内容去重——[图片N] 占位符编号与 images 顺序严格对应，
@@ -320,6 +342,21 @@ export async function buildAnswererEnv(params: {
 			if (suggestion.suggestion_options !== undefined) {
 				env.suggestion_options = suggestion.suggestion_options;
 			}
+		}
+	}
+	if (isChoiceQuestion) {
+		// Reuse the successful upload order, including shared URLs, rather than deriving letters from image numbers.
+		const refs = new Map(imageUrls.map((url, index) => [url, `[图片${index + 1}]`]));
+		const imageRefs = (urls: string[]) => urls.flatMap((url) => (refs.has(url) ? [refs.get(url)!] : []));
+		env.question_image_refs = imageRefs(sourceImages.titleUrls);
+		if (params.optionItems !== undefined) {
+			env.option_items = params.optionItems.map((item, index) => {
+				return {
+					label: String.fromCharCode(65 + index),
+					text: replaceImageUrls(item.text, refs),
+					image_refs: imageRefs(item.images ?? item.text.match(IMAGE_URL_REGEX) ?? [])
+				};
+			});
 		}
 	}
 	return { env, imageUrls };
