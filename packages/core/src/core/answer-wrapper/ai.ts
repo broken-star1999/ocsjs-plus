@@ -6,10 +6,14 @@ import { resolveAIQuestionType, AIQuestionType } from './ai-question-type';
 
 export const AI_API_KEY_STORAGE = 'ocs.ai.apiKey';
 
+export type AIAuthMode = 'api-key' | 'none';
+
 export interface AIAnswererConfig {
 	endpoint: string;
 	model: string;
 	vision: boolean;
+	/** Anonymous compatible services must opt in explicitly. */
+	authMode?: AIAuthMode;
 	sourceId?: string;
 	timeoutSeconds?: number;
 	extraBody?: Record<string, unknown>;
@@ -24,13 +28,26 @@ export interface AIModel {
 	vision?: boolean;
 }
 
+/** One real page option, kept intact even when its text contains line breaks or several images. */
+export interface AIOptionItem {
+	label: string;
+	text: string;
+	image_refs?: string[];
+}
+
 export interface AIQuestion {
 	/** Optional diagnostics only; observer failures never change an answer request. */
 	onProgress?: (info: SearchInformation) => void | Promise<void>;
+	/** Local task pause/cancellation gate before each paid completion, including later summary calls. */
+	beforeRequest?: () => void | Promise<void>;
 	/** Actual writable fields supplied by the page adapter, never inferred from underscores. */
 	blank_count?: number;
 	/** Actual option elements supplied by the page adapter, never inferred from text lines. */
 	option_count?: number;
+	/** Page-adapter option boundaries; never reconstructed from the flattened options text. */
+	option_items?: AIOptionItem[];
+	/** Global image markers referenced by the question body, possibly shared with options. */
+	question_image_refs?: string[];
 	/** Unique images identified in the question, including images whose conversion failed. */
 	expected_image_count?: number;
 	model_reports?: {
@@ -68,16 +85,46 @@ export function getAIKeyStorage(endpoint: string, sourceId?: string): string {
 	);
 }
 
+export function getAIAuthMode(config: { endpoint: string; authMode?: AIAuthMode }): AIAuthMode {
+	const host = new URL(normalizeAIEndpoint(config.endpoint)).hostname;
+	if (config.authMode !== undefined && config.authMode !== 'api-key' && config.authMode !== 'none') {
+		throw new Error('AI 鉴权方式无效，请重新保存提供商配置');
+	}
+	if (['api.deepseek.com', 'api.xiaomimimo.com', 'api.openai.com'].includes(host)) return 'api-key';
+	return config.authMode || 'api-key';
+}
+
+function readAIKey(endpoint: string, sourceId?: string): string {
+	const value = typeof GM_getValue === 'undefined' ? '' : GM_getValue(getAIKeyStorage(endpoint, sourceId), '');
+	return typeof value === 'string' ? value.trim() : '';
+}
+
+/** Only checks local configuration; never makes a network request or exposes a credential. */
+export function getAIConfigurationError(config: AIAnswererConfig): string {
+	try {
+		normalizeAIEndpoint(config.endpoint);
+		if (!config.model?.trim()) return '模型 ID 为空，请在提供商中重新配置。';
+		if (getAIAuthMode(config) === 'api-key' && !readAIKey(config.endpoint, config.sourceId)) {
+			return '尚未填写 API Key，请在模型提供商中保存密钥；无需鉴权的自定义接口请选择“无需 API Key”。';
+		}
+		return '';
+	} catch (error) {
+		return error instanceof Error ? error.message : '无法读取 AI 接口配置，请重新保存提供商。';
+	}
+}
+
 async function requestAIJSON(
 	url: string,
 	endpoint: string,
 	timeoutMs: number,
 	body?: object,
-	sourceId?: string
+	sourceId?: string,
+	authMode?: AIAuthMode
 ): Promise<any> {
+	const requiresKey = getAIAuthMode({ endpoint, authMode }) === 'api-key';
+	const key = requiresKey ? readAIKey(endpoint, sourceId) : '';
+	if (requiresKey && !key) throw new Error('尚未填写 API Key，本次未请求 AI。请保存密钥或选择“无需 API Key”。');
 	if (typeof GM_xmlhttpRequest === 'undefined') throw new Error('AI 请求需要脚本猫或 Tampermonkey');
-	const key =
-		typeof GM_getValue === 'undefined' ? '' : String(GM_getValue(getAIKeyStorage(endpoint, sourceId), '')).trim();
 	return new Promise((resolve, reject) => {
 		GM_xmlhttpRequest({
 			url,
@@ -112,9 +159,9 @@ async function requestAIJSON(
 	});
 }
 
-export async function listAIModels(endpoint: string, sourceId?: string): Promise<AIModel[]> {
+export async function listAIModels(endpoint: string, sourceId?: string, authMode?: AIAuthMode): Promise<AIModel[]> {
 	const url = normalizeAIEndpoint(endpoint).replace(/\/chat\/completions$/, '/models');
-	const response = await requestAIJSON(url, endpoint, 20_000, undefined, sourceId);
+	const response = await requestAIJSON(url, endpoint, 20_000, undefined, sourceId, authMode);
 	if (!Array.isArray(response?.data)) throw new Error('模型列表格式错误：需要 data 数组');
 	const seen = new Set<string>();
 	const models: AIModel[] = [];
@@ -132,9 +179,50 @@ export async function listAIModels(endpoint: string, sourceId?: string): Promise
 	return models;
 }
 
-function answerRules(type: AIQuestionType): string[] {
+export function getAIQuestionOptionTexts(question: Pick<AIQuestion, 'option_items' | 'options'>): string[] {
+	return question.option_items !== undefined
+		? question.option_items.map((item) => item.text)
+		: (question.options || '').split('\n');
+}
+
+function validateAIImageReferences(refs: string[] | undefined, imageCount: number): void {
+	if (refs === undefined) return;
+	if (
+		!Array.isArray(refs) ||
+		refs.some((ref) => {
+			const match = typeof ref === 'string' && ref.match(/^\[图片([1-9]\d*)\]$/);
+			return !match || Number(match[1]) > imageCount;
+		})
+	) {
+		throw new Error('题目或选项的图片引用无效，本题未请求 AI。');
+	}
+}
+
+function validateAIOptionItems(question: AIQuestion, type: AIQuestionType, imageCount: number): void {
+	validateAIImageReferences(question.question_image_refs, imageCount);
+	const items = question.option_items;
+	if (items === undefined) return;
+	if (
+		type === 'completion' ||
+		!Array.isArray(items) ||
+		items.length < 1 ||
+		items.length > 26 ||
+		(question.option_count !== undefined && items.length !== question.option_count) ||
+		items.some(
+			(item, index) => !item || item.label !== String.fromCharCode(65 + index) || typeof item.text !== 'string'
+		)
+	) {
+		throw new Error('网页选项分组、字母或选项数量不一致，本题未请求 AI。');
+	}
+	for (const item of items) validateAIImageReferences(item.image_refs, imageCount);
+}
+
+function answerRules(type: AIQuestionType, groupedOptions = false): string[] {
 	const choiceRules = [
-		'文字选项和图片选项都按题目中的选项字母作答；没有显示字母时按网页选项排列顺序对应 A、B、C、D。不要把题号或 [图片N] 的图片编号当作选项字母。答案不得包含公式、选项原文、数字序号或额外的编号字段。'
+		groupedOptions
+			? '文字选项和图片选项都按 option_items 中的 label 字段作答；label 已与网页实际选项位置绑定，是选项字母的唯一依据。text 是该选项的完整内容，内部换行、多张图片或正文中的 A/B 等字母都不会产生新选项，也不会改变 label。'
+			: '文字选项和图片选项都按题目中的选项字母作答；没有显示字母时按网页选项排列顺序对应 A、B、C、D。',
+		'不要把题号或 [图片N] 的图片编号当作选项字母。答案不得包含公式、选项原文、数字序号或额外的编号字段。'
 	];
 	if (type === 'single')
 		return [
@@ -177,13 +265,20 @@ export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 			`本题有 ${question.expected_image_count} 张图片，仅成功读取 ${images.length} 张，本题未请求 AI。请检查图片题优化或重试。`
 		);
 	}
+	const type = resolveAIQuestionType(question);
+	validateAIOptionItems(question, type, images.length);
 	const hasImageReferences = /\[图片\d+\]|https?:\/\/\S+\.(?:png|jpe?g|webp|gif|svg)/i.test(
-		question.title + '\n' + (question.options || '')
+		[
+			question.title,
+			question.options || '',
+			question.suggestion_title || '',
+			question.suggestion_options || '',
+			...(question.option_items?.map((item) => item.text) || [])
+		].join('\n')
 	);
 	if ((hasImages || hasImageReferences) && (!config.vision || !hasImages)) {
 		throw new Error('本题含图片，请开启图片题优化及 AI 识图，并使用支持图片的模型');
 	}
-	const type = resolveAIQuestionType(question);
 	if (
 		['single', 'multiple', 'judgement'].includes(type) &&
 		question.option_count !== undefined &&
@@ -203,14 +298,17 @@ export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 	const jsonMode =
 		host === 'api.deepseek.com' ||
 		(host === 'api.xiaomimimo.com' && /^mimo-v2\.6-(?:flash|pro|pro-ultraspeed)$/.test(config.model.trim()));
+	const optionCount = question.option_count ?? question.option_items?.length;
 	const text = JSON.stringify({
 		type,
-		...(['single', 'multiple', 'judgement'].includes(type) && question.option_count !== undefined
-			? { option_count: question.option_count }
+		...(['single', 'multiple', 'judgement'].includes(type) && optionCount !== undefined
+			? { option_count: optionCount }
 			: {}),
 		...(type === 'completion' && question.blank_count !== undefined ? { blank_count: question.blank_count } : {}),
 		question: question.suggestion_title || question.title,
 		options: question.suggestion_options || question.options || '',
+		...(question.option_items !== undefined ? { option_items: question.option_items } : {}),
+		...(question.question_image_refs !== undefined ? { question_image_refs: question.question_image_refs } : {}),
 		...(question.model_reports ? { model_reports: question.model_reports } : {})
 	});
 	return {
@@ -231,7 +329,13 @@ export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 					'接口如返回独立的思考内容，请优先使用简体中文；数学公式、代码和选项原文保持原样。',
 					'仅返回 JSON：{"answers":["答案"],"uncertain":false}，不要解释或 Markdown。',
 					...(type === 'unknown' ? [] : ['用户消息的 type 字段由程序确定，优先遵守该题型，不要根据题干内容重新分类。']),
-					...answerRules(type),
+					...answerRules(type, question.option_items !== undefined),
+					...(question.option_items !== undefined
+						? [
+								'option_items 是网页实际选项分组，优先于兼容用的 options 文本；每个条目是一个完整选项，不得按换行或图片张数重新拆分。',
+								'image_refs 表示图片所属位置；题干和一个选项均可包含多张图片，同一张图片也可被题干或多个选项共同引用。先核对内容，再返回其 label；不能把第二张图片推断为 B。'
+						  ]
+						: []),
 					...(type === 'completion' && question.blank_count !== undefined
 						? [
 								`网页实际只有 ${question.blank_count} 个填写位置，answers 必须恰好包含 ${question.blank_count} 个字符串。`,
@@ -245,7 +349,22 @@ export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 			{
 				role: 'user',
 				content: hasImages
-					? [{ type: 'text', text }, ...images.map((url) => ({ type: 'image_url', image_url: { url } }))]
+					? [
+							{ type: 'text', text },
+							...images.flatMap((url, index) => {
+								const ref = `[图片${index + 1}]`;
+								const roles: string[] = [];
+								if (question.question_image_refs?.includes(ref))
+									roles.push(question.option_items ? '题干' : '题目或选区正文');
+								for (const item of question.option_items || []) {
+									if (item.image_refs?.includes(ref)) roles.push(`选项 ${item.label}`);
+								}
+								return [
+									{ type: 'text', text: `${ref}：${roles.join('；') || '所属位置见正文中的同名标记'}。` },
+									{ type: 'image_url', image_url: { url } }
+								];
+							})
+					  ]
 					: text
 			}
 		]
@@ -279,7 +398,8 @@ export function parseAIAnswers(
 	content: unknown,
 	type?: string,
 	options?: string,
-	blankCount?: number
+	blankCount?: number,
+	groupedOptions?: AIOptionItem[]
 ): string[] | undefined {
 	if (typeof content !== 'string') throw new Error('AI 未返回文本答案');
 	const text = content.trim().replace(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i, '$1');
@@ -303,7 +423,7 @@ export function parseAIAnswers(
 	if ((type === 'single' || type === 'judgement') && answers.length !== 1) {
 		throw new Error('AI 为单选或判断题返回了多个答案');
 	}
-	const optionItems = (options || '').split('\n');
+	const optionItems = getAIQuestionOptionTexts({ option_items: groupedOptions, options });
 	const judgementOptions = isJudgementOptions(optionItems);
 	if (type === 'judgement' || (type === 'single' && judgementOptions)) {
 		if (answers.length !== 1) throw new Error('AI 为单选或判断题返回了多个答案');
@@ -331,6 +451,14 @@ export async function searchAIAnswer(
 	timeoutMs: number
 ): Promise<SearchInformation> {
 	const info: SearchInformation = { name: config.label || 'AI · ' + config.model, results: [] };
+	if (question.beforeRequest) {
+		try {
+			await question.beforeRequest();
+		} catch (error) {
+			info.error = error instanceof Error ? error.message : '原答题任务已停止，本次未请求 AI。';
+			return info;
+		}
+	}
 	const record: AICallRecord = {
 		id: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2),
 		startedAt: Date.now(),
@@ -353,7 +481,8 @@ export async function searchAIAnswer(
 			config.endpoint,
 			config.timeoutSeconds === undefined ? timeoutMs : config.timeoutSeconds * 1000,
 			buildAIRequest(config, question),
-			config.sourceId
+			config.sourceId,
+			config.authMode
 		);
 		record.usage = readAIUsage(response?.usage);
 		const choice = response?.choices?.[0];
@@ -366,7 +495,13 @@ export async function searchAIAnswer(
 			throw new Error('AI 回答未正常完成：' + choice.finish_reason);
 		}
 		if (choice?.message?.refusal) throw new Error('AI 未能回答本题');
-		const answers = parseAIAnswers(choice?.message?.content, type, question.options, question.blank_count);
+		const answers = parseAIAnswers(
+			choice?.message?.content,
+			type,
+			question.options,
+			question.blank_count,
+			question.option_items
+		);
 		if (answers) {
 			info.results.push({
 				question: question.title,

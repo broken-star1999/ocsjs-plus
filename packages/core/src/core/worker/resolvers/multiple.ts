@@ -43,8 +43,21 @@ export function resolveMultiple(
 ): MultipleResolveResult {
 	if (preferPlainAnswer) {
 		const answer =
-			resultAnswers.length === 1 ? resolvePlainAnswer(StringUtils.nowrap(resultAnswers[0], '').trim()) : undefined;
-		if (!answer || !/^[A-Z]+$/.test(answer)) return { finish: false };
+			resultAnswers.length === 1
+				? StringUtils.nowrap(resultAnswers[0], '')
+						.trim()
+						.replace(/[,，.。．、 #]/g, '')
+						.trim()
+				: undefined;
+		// Native AI options span A-Z. Keep the legacy bank parser's eight-letter
+		// limit separate while retaining its sorted, unique-combination checks.
+		if (
+			!answer ||
+			!/^[A-Z]+$/.test(answer) ||
+			new Set(answer).size !== answer.length ||
+			answer !== Array.from(answer).sort().join('')
+		)
+			return { finish: false };
 		const indices = Array.from(answer, (letter) => letter.charCodeAt(0) - 65);
 		// Validate the entire combination before returning any options to click.
 		if (indices.some((index) => index < 0 || index >= options.length)) return { finish: false };

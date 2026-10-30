@@ -469,7 +469,7 @@ async function main() {
 			});
 		f.worker.opts.answerer = async () => [
 			await searchAIAnswer(
-				{ endpoint: 'https://example.test/v1', model: 'mock', vision: true },
+				{ endpoint: 'https://example.test/v1', model: 'mock', vision: true, authMode: 'none' },
 				{
 					title: '图片选择题',
 					type: 'single',

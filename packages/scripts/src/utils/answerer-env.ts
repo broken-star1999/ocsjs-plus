@@ -12,6 +12,12 @@ export interface ImageSuggestionResult {
 	suggestion_options?: string;
 }
 
+/** A page option before flattening; its internal newlines and repeated content are significant. */
+export interface AnswererOptionItem {
+	text: string;
+	images?: string[];
+}
+
 /** 是否运行在 Node 环境（非浏览器 / 非油猴脚本） */
 function isNodeEnv(): boolean {
 	return (
@@ -128,22 +134,39 @@ function convertImageToBase64(source: string | HTMLImageElement): Promise<string
 		// 浏览器环境：尝试设置 crossOrigin 加载图片 + Canvas 转换
 		const img = new Image();
 		img.crossOrigin = 'anonymous';
+		let settled = false;
+		const cleanup = () => {
+			clearTimeout(timeout);
+			img.onload = img.onerror = null;
+		};
+		const fallback = () => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			gmXmlHttpRequestFallback(url, resolve, reject);
+		};
+		// A server that never finishes loading must not hold the answering thread forever.
+		const timeout = setTimeout(fallback, 20_000);
 		img.onload = () => {
+			if (settled) return;
 			try {
 				const canvas = document.createElement('canvas');
 				canvas.width = img.naturalWidth;
 				canvas.height = img.naturalHeight;
 				const ctx = canvas.getContext('2d')!;
 				ctx.drawImage(img, 0, 0);
-				resolve(canvas.toDataURL('image/png'));
+				const dataUrl = canvas.toDataURL('image/png');
+				settled = true;
+				cleanup();
+				resolve(dataUrl);
 			} catch {
 				// Canvas 失败，回退到 GM_xmlhttpRequest
-				gmXmlHttpRequestFallback(url, resolve, reject);
+				fallback();
 			}
 		};
 		img.onerror = () => {
 			// 图片加载失败（CORS 阻止），回退到 GM_xmlhttpRequest
-			gmXmlHttpRequestFallback(url, resolve, reject);
+			fallback();
 		};
 		img.src = url;
 	});
@@ -155,29 +178,115 @@ function gmXmlHttpRequestFallback(url: string, resolve: (value: string) => void,
 		reject(new Error('图片转 base64 失败'));
 		return;
 	}
-	// eslint-disable-next-line no-undef
-	GM_xmlhttpRequest({
-		url,
-		method: 'GET',
-		responseType: 'blob',
-		onload: (response) => {
-			const blob = response.response as Blob;
-			const reader = new FileReader();
-			reader.onloadend = () => resolve(reader.result as string);
-			reader.onerror = reject;
-			reader.readAsDataURL(blob);
-		},
-		onerror: reject
-	});
+	let settled = false;
+	const finish = (error?: Error, data?: string) => {
+		if (settled) return;
+		settled = true;
+		clearTimeout(timeout);
+		if (error) reject(error);
+		else resolve(data!);
+	};
+	// This also bounds a failed/stalled FileReader, after the HTTP response has arrived.
+	const timeout = setTimeout(() => finish(new Error('图片下载或读取超时')), 20_000);
+	try {
+		// eslint-disable-next-line no-undef
+		GM_xmlhttpRequest({
+			url,
+			method: 'GET',
+			timeout: 20_000,
+			responseType: 'blob',
+			onload: (response) => {
+				if (settled) return;
+				if (response.status < 200 || response.status >= 300) {
+					finish(new Error(`图片下载失败 ${response.status}`));
+					return;
+				}
+				try {
+					const reader = new FileReader();
+					reader.onload = () => finish(undefined, reader.result as string);
+					reader.onerror = () => finish(new Error('图片读取失败'));
+					reader.onabort = () => finish(new Error('图片读取已取消'));
+					reader.readAsDataURL(response.response as Blob);
+				} catch {
+					finish(new Error('图片读取失败'));
+				}
+			},
+			onerror: () => finish(new Error('图片下载失败')),
+			ontimeout: () => finish(new Error('图片下载超时')),
+			onabort: () => finish(new Error('图片下载已取消'))
+		});
+	} catch {
+		finish(new Error('图片下载失败'));
+	}
 }
 
-/**
- * 将任意 data URL（可能含 charset 等参数、或非 png mime）统一为 data:image/png;base64,{b64} 格式。
- * 仅重写前缀与 mime，不转换图片字节。
- */
-function normalizeToPngDataUrl(dataUrl: string): string {
-	const m = dataUrl.match(/^data:[^;,]+.*?;base64,(.+)$/);
-	return `data:image/png;base64,${m ? m[1] : dataUrl}`;
+/** Keep the actual image type; changing a MIME prefix never converts its encoded bytes. */
+async function normalizeImageDataUrl(dataUrl: string): Promise<string> {
+	const match = dataUrl.match(/^data:([^;,]*)((?:;[^,]*)?),([\s\S]*)$/i);
+	if (!match) throw new Error('图片 data URL 无效');
+	let mime = match[1].toLowerCase().replace(/^image\/jpg$/, 'image/jpeg');
+	const genericMime = mime === '' || mime === 'application/octet-stream' || mime === 'binary/octet-stream';
+	if (!genericMime && !mime.startsWith('image/')) throw new Error('图片 data URL 无效');
+	if (/(?:^|;)base64(?:;|$)/i.test(match[2])) {
+		const payload = match[3].replace(/\s+/g, '');
+		if (
+			!payload ||
+			!/^[A-Za-z0-9+/]+={0,2}$/.test(payload) ||
+			payload.length % 4 === 1 ||
+			(payload.endsWith('=') && payload.length % 4 !== 0)
+		) {
+			throw new Error('图片 base64 无效');
+		}
+		// Download endpoints sometimes omit Content-Type. Identify binary image headers instead of
+		// treating arbitrary bytes as PNG or rejecting a valid GM download solely for its generic MIME.
+		if (genericMime) {
+			const header = atob(payload.slice(0, 32));
+			mime = header.startsWith('\x89PNG\r\n\x1a\n')
+				? 'image/png'
+				: header.startsWith('\xff\xd8\xff')
+				? 'image/jpeg'
+				: /^GIF8[79]a/.test(header)
+				? 'image/gif'
+				: header.startsWith('RIFF') && header.slice(8, 12) === 'WEBP'
+				? 'image/webp'
+				: header.startsWith('BM')
+				? 'image/bmp'
+				: '';
+			if (!mime) throw new Error('图片格式无法识别');
+			dataUrl = `data:${mime};base64,${payload}`;
+		}
+		if (/^image\/(png|jpeg|gif|webp)$/.test(mime)) return `data:${mime};base64,${payload}`;
+	}
+	// SVG/BMP and non-base64 inline images need real browser decoding before an AI can consume PNG bytes.
+	if (isNodeEnv()) throw new Error('当前环境无法转换此图片格式');
+	return new Promise((resolve, reject) => {
+		const image = new Image();
+		const timeout = setTimeout(() => finish(new Error('图片格式转换超时')), 20_000);
+		const finish = (error?: Error, value?: string) => {
+			clearTimeout(timeout);
+			image.onload = image.onerror = null;
+			if (error) reject(error);
+			else resolve(value!);
+		};
+		image.onload = () => {
+			try {
+				if (!image.naturalWidth || !image.naturalHeight) throw new Error('图片尺寸无效');
+				const canvas = document.createElement('canvas');
+				canvas.width = image.naturalWidth;
+				canvas.height = image.naturalHeight;
+				const context = canvas.getContext('2d');
+				if (!context) throw new Error('图片画布不可用');
+				context.drawImage(image, 0, 0);
+				const result = canvas.toDataURL('image/png');
+				if (!result.startsWith('data:image/png;base64,')) throw new Error('图片转换失败');
+				finish(undefined, result);
+			} catch (error) {
+				finish(error instanceof Error ? error : new Error('图片转换失败'));
+			}
+		};
+		image.onerror = () => finish(new Error('图片解码失败'));
+		image.src = dataUrl;
+	});
 }
 
 /** 图片最小边长阈值：低于此值的图片会被题库/模型（如豆包 14px）拒绝，需放大后再提交 */
@@ -194,6 +303,14 @@ function questionImageUrls(title: string, options?: string, titleImages?: string
 	const titleUrls = titleImages?.length ? titleImages : title.match(IMAGE_URL_REGEX) || [];
 	const optionUrls = optionImages?.length ? optionImages : options?.match(IMAGE_URL_REGEX) || [];
 	return { titleUrls, optionUrls, allUrls: [...new Set([...titleUrls, ...optionUrls])] };
+}
+
+function replaceImageUrls(text: string, refs: ReadonlyMap<string, string>): string {
+	// Replace longer URLs first so a.png cannot consume the prefix of a.png?x=1; numbering stays unchanged.
+	for (const [url, ref] of [...refs].sort(([left], [right]) => right.length - left.length)) {
+		text = text.split(url).join(` ${ref} `);
+	}
+	return text;
 }
 
 export async function createImageSuggestion(
@@ -213,11 +330,15 @@ export async function createImageSuggestion(
 	const base64Map = new Map<string, string>();
 	await Promise.all(
 		allUrls.map(async (url) => {
+			let downloaded: string | undefined;
 			try {
-				const base64 = await imageToBase64(url);
-				base64Map.set(url, base64);
+				downloaded = await imageToBase64(url);
+				// Decode formats concurrently too: several slow SVGs must not multiply the preparation deadline.
+				base64Map.set(url, await normalizeImageDataUrl(downloaded));
 			} catch {
-				// 转换失败的图片跳过
+				// A temporary HTTP-200 login/error response must not poison later retries.
+				// Keep a concurrent successful download if it has already replaced this value.
+				if (downloaded !== undefined && imageBase64Cache.get(url) === downloaded) imageBase64Cache.delete(url);
 			}
 		})
 	);
@@ -233,8 +354,8 @@ export async function createImageSuggestion(
 	for (const url of allUrls) {
 		const base64 = base64Map.get(url);
 		if (!base64) continue;
-		// 统一为 data:image/png;base64,{b64} 格式，去除 charset 等参数与原始 mime 差异
-		let normalized = normalizeToPngDataUrl(base64);
+		// Failed conversions remain absent; the expected image count makes AI preflight reject incomplete input.
+		let normalized = base64;
 		// 过小图片放大到 ≥ MIN_IMAGE_DIMENSION，避免模型（如豆包 14px）拒绝
 		const size = getImageSize(normalized);
 		if (size && (size.width < MIN_IMAGE_DIMENSION || size.height < MIN_IMAGE_DIMENSION)) {
@@ -245,7 +366,7 @@ export async function createImageSuggestion(
 				continue;
 			}
 		}
-		placeholderMap.set(url, ` [图片${images.length + 1}] `);
+		placeholderMap.set(url, `[图片${images.length + 1}]`);
 		images.push(normalized);
 		urls.push(url);
 	}
@@ -253,20 +374,14 @@ export async function createImageSuggestion(
 	if (images.length === 0) return undefined;
 
 	// 标题：URL 替换为 [图片N] 占位符（不含 base64）
-	let suggestionTitle = title;
-	for (const [url, placeholder] of placeholderMap) {
-		suggestionTitle = suggestionTitle.split(url).join(placeholder);
-	}
+	const suggestionTitle = replaceImageUrls(title, placeholderMap);
 
 	// 选项：URL 替换为 [图片N] 占位符（不含 base64），仅当选项含图片时返回
 	let suggestionOptions: string | undefined;
 	if (options) {
 		const hasOptionImages = optionUrls.some((url) => base64Map.has(url));
 		if (hasOptionImages) {
-			suggestionOptions = options;
-			for (const [url, placeholder] of placeholderMap) {
-				suggestionOptions = suggestionOptions!.split(url).join(placeholder);
-			}
+			suggestionOptions = replaceImageUrls(options, placeholderMap);
 		}
 	}
 
@@ -287,6 +402,8 @@ export async function buildAnswererEnv(params: {
 	titleImages?: string[];
 	/** DOM 调用方传入的选项图片 URL（跳过正则提取） */
 	optionsImages?: string[];
+	/** Ordered DOM option groups; never reconstructed by splitting the merged options text. */
+	optionItems?: AnswererOptionItem[];
 	enableImageOptimize?: boolean;
 }): Promise<{
 	env: Record<string, any>;
@@ -304,12 +421,24 @@ export async function buildAnswererEnv(params: {
 		title: params.title,
 		options
 	};
-	const expectedImages = questionImageUrls(params.title, options, params.titleImages, params.optionsImages).allUrls
-		.length;
+	const isChoiceQuestion = ['single', 'multiple', 'judgement'].includes(params.type || '');
+	const optionImages = [
+		...(params.optionsImages?.length ? params.optionsImages : options.match(IMAGE_URL_REGEX) || []),
+		...(isChoiceQuestion
+			? params.optionItems?.flatMap((item) => item.images ?? item.text.match(IMAGE_URL_REGEX) ?? []) || []
+			: [])
+	];
+	const sourceImages = questionImageUrls(params.title, options, params.titleImages, optionImages);
+	const expectedImages = sourceImages.allUrls.length;
 	if (expectedImages) env.expected_image_count = expectedImages;
 	let imageUrls: string[] = [];
 	if (params.enableImageOptimize) {
-		const suggestion = await createImageSuggestion(params.title, options, params.titleImages, params.optionsImages);
+		const suggestion = await createImageSuggestion(
+			params.title,
+			options,
+			sourceImages.titleUrls,
+			sourceImages.optionUrls
+		);
 		if (suggestion) {
 			// 新增独立字段，由题库配置（v2）显式引用后才会被提交
 			// 注意：env.images 不做内容去重——[图片N] 占位符编号与 images 顺序严格对应，
@@ -320,6 +449,21 @@ export async function buildAnswererEnv(params: {
 			if (suggestion.suggestion_options !== undefined) {
 				env.suggestion_options = suggestion.suggestion_options;
 			}
+		}
+	}
+	if (isChoiceQuestion) {
+		// Reuse the successful upload order, including shared URLs, rather than deriving letters from image numbers.
+		const refs = new Map(imageUrls.map((url, index) => [url, `[图片${index + 1}]`]));
+		const imageRefs = (urls: string[]) => urls.flatMap((url) => (refs.has(url) ? [refs.get(url)!] : []));
+		env.question_image_refs = imageRefs(sourceImages.titleUrls);
+		if (params.optionItems !== undefined) {
+			env.option_items = params.optionItems.map((item, index) => {
+				return {
+					label: String.fromCharCode(65 + index),
+					text: replaceImageUrls(item.text, refs),
+					image_refs: imageRefs(item.images ?? item.text.match(IMAGE_URL_REGEX) ?? [])
+				};
+			});
 		}
 	}
 	return { env, imageUrls };

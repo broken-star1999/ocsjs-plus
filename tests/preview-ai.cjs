@@ -73,6 +73,7 @@ if(location.search.includes('search=1')||location.search.includes('results=1')||
  values.set('common.settings.imageOptimize',true);
  values.set('common.settings.aiProviders',[{id:'fixture',name:'DeepSeek（本地模拟）',preset:'deepseek',endpoint:'https://api.deepseek.com',timeoutSeconds:120,catalog:[],models:[{id:'fixture-vision',name:'模拟识图模型',enabled:true,vision:true,extraBody:{}}]}]);
  values.set('common.settings.aiSelectedModel',JSON.stringify(['fixture','fixture-vision']));
+ values.set('ocs.ai.apiKey:fixture:https://api.deepseek.com/chat/completions','local-fixture-only');
 }
 if(location.search.includes('ensemble=1')){
  const sources=values.get('common.settings.aiProviders');sources[0].models.push(

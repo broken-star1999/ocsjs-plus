@@ -1,4 +1,4 @@
-import { AIAnswererConfig, AIModel, normalizeAIEndpoint, validateAIExtraBody } from './ai';
+import { AIAnswererConfig, AIAuthMode, AIModel, getAIAuthMode, normalizeAIEndpoint, validateAIExtraBody } from './ai';
 import type { AnswererWrapper } from './interface';
 import type { AIEnsembleRule, AISubjectiveRule } from './ai-ensemble';
 
@@ -14,6 +14,7 @@ export interface AIProviderSource {
 	name: string;
 	preset: 'deepseek' | 'mimo' | 'openai';
 	endpoint: string;
+	authMode?: AIAuthMode;
 	timeoutSeconds: number;
 	models: AIConfiguredModel[];
 	/** Discovery candidates are never implicitly enabled. */
@@ -126,6 +127,7 @@ export function resolveAISelection(state: AIProviderState): AIAnswererConfig | u
 				label: source.name + ' / ' + model.name,
 				providerName: source.name,
 				endpoint: source.endpoint,
+				authMode: source.authMode || 'api-key',
 				sourceId: source.id,
 				model: model.id,
 				vision: model.vision,
@@ -148,6 +150,7 @@ export function saveAISource(state: AIProviderState, source: AIProviderSource): 
 		...source,
 		name,
 		endpoint: source.endpoint.trim(),
+		authMode: getAIAuthMode(source),
 		catalog: endpointChanged ? [] : source.catalog,
 		models: source.models.map((model) => ({ ...model, extraBody: validateAIExtraBody(model.extraBody) }))
 	};

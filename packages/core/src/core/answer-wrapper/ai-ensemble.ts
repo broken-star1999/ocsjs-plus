@@ -1,4 +1,10 @@
-import { AIAnswererConfig, searchAIAnswer } from './ai';
+import {
+	AIAnswererConfig,
+	AIOptionItem,
+	getAIConfigurationError,
+	getAIQuestionOptionTexts,
+	searchAIAnswer
+} from './ai';
 import type { SearchInformation } from './interface';
 import type { AICallDetails } from './ai-call-log';
 import { isJudgementOptions, resolveJudgement } from '../worker/resolvers/judgement';
@@ -59,12 +65,12 @@ export function requireAIReview(infos: SearchInformation[], reason: string): voi
 /** Compare answer values only. No reasoning text or additional model vote can break a tie. */
 export function canonicalEnsembleAnswers(
 	answers: string[],
-	question: { type?: string; title: string; options?: string; option_count?: number }
+	question: { type?: string; title: string; options?: string; option_count?: number; option_items?: AIOptionItem[] }
 ): string[] | undefined {
 	if (!answers.length || answers.some((answer) => !answer.trim())) return;
 	const type = resolveAIQuestionType(question);
 	const values = answers.map((answer) => answer.trim().replace(/\r\n/g, '\n'));
-	if (type === 'judgement' || (type === 'single' && isJudgementOptions((question.options || '').split('\n')))) {
+	if (type === 'judgement' || (type === 'single' && isJudgementOptions(getAIQuestionOptionTexts(question)))) {
 		if (values.length !== 1) return;
 		const result = resolveJudgement([values], ['正确', '错误']);
 		return result.finish ? [result.option!] : undefined;
@@ -76,10 +82,11 @@ export function canonicalEnsembleAnswers(
 		if (new Set(letters).size !== letters.length) return;
 		// Only page-adapter metadata is authoritative. Online selections may have
 		// all options embedded in the title and an empty `options` string.
+		const optionCount = question.option_count ?? question.option_items?.length;
 		if (
-			Number.isInteger(question.option_count) &&
-			question.option_count! >= 0 &&
-			[...letters].some((letter) => letter.charCodeAt(0) - 65 >= question.option_count!)
+			Number.isInteger(optionCount) &&
+			optionCount! >= 0 &&
+			[...letters].some((letter) => letter.charCodeAt(0) - 65 >= optionCount!)
 		)
 			return;
 		return [letters.split('').sort().join('')];
@@ -151,6 +158,14 @@ export async function searchAIEnsemble(
 	if (config.error || config.models.length < 2 || (!config.repeat && new Set(identities).size !== identities.length)) {
 		info.error = ensemble.reason = config.error || '联合答题至少选择两个不同的有效模型，请检查设置。';
 		return finish();
+	}
+	const activeModels = [...config.models, ...(rule.includes('summary') && config.summary ? [config.summary] : [])];
+	for (const model of activeModels) {
+		const error = getAIConfigurationError(model);
+		if (error) {
+			info.error = ensemble.reason = `${model.providerName || model.label || model.model}：${error}`;
+			return finish();
+		}
 	}
 	if (
 		rule === 'selected' &&

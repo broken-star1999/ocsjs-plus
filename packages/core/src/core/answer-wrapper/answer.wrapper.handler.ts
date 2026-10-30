@@ -1,6 +1,6 @@
 import { AnswererWrapper, SearchInformation, Result } from './interface';
 import { request } from '../utils/request';
-import { searchAIAnswer } from './ai';
+import { AIOptionItem, searchAIAnswer } from './ai';
 import { searchAIEnsemble } from './ai-ensemble';
 import { $ } from '../../utils';
 
@@ -48,6 +48,8 @@ export async function defaultAnswerWrapperHandler(
 	env: {
 		blank_count?: number;
 		option_count?: number;
+		option_items?: AIOptionItem[];
+		question_image_refs?: string[];
 		expected_image_count?: number;
 		title?: string;
 		options?: string;

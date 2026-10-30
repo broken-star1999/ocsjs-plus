@@ -9,7 +9,13 @@
 	const controls = area.querySelector('#chain-controls');
 	const cases = area.querySelector('#chain-cases');
 	const paper = area.querySelector('#chain-paper');
-	const config = { endpoint: 'https://offline.example/v1', model: 'fixture', vision: true, timeoutSeconds: 10 };
+	const config = {
+		endpoint: 'https://offline.example/v1',
+		model: 'fixture',
+		vision: true,
+		timeoutSeconds: 10,
+		authMode: 'none'
+	};
 	const wrapper = {
 		name: '本地测试',
 		url: '',
@@ -149,6 +155,7 @@
 					name: '测试',
 					preset: 'openai',
 					endpoint: config.endpoint,
+					authMode: 'none',
 					timeoutSeconds: 10,
 					catalog: [],
 					models: [{ id: 'fixture', name: '测试', enabled: true, vision: true, extraBody: {} }]

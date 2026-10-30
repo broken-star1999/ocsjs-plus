@@ -194,7 +194,12 @@ async function main() {
 		);
 		assert.equal(requests[0].headers.Authorization, 'Bearer one-key');
 		assert.equal(requests[4].headers.Authorization, 'Bearer two-key');
-		assert.ok(requests.every((request) => JSON.parse(request.data).messages[1].content[1].type === 'image_url'));
+		assert.ok(
+			requests.every((request) => {
+				const content = JSON.parse(request.data).messages[1].content;
+				return content.some((part: any) => part.type === 'image_url') && /\[图片1\]/.test(content[1].text);
+			})
+		);
 		requests
 			.slice()
 			.reverse()
@@ -357,7 +362,8 @@ async function main() {
 		assert.equal(payload.model_reports.length, 5);
 		assert.match(payload.model_reports[0].reasoning, /reasoning-0/);
 		assert.deepEqual(payload.model_reports[1].answers, ['B']);
-		assert.equal(content[1].type, 'image_url');
+		assert.match(content[1].text, /\[图片1\]/);
+		assert.equal(content.filter((part: any) => part.type === 'image_url').length, 1);
 		assert.equal(request.headers.Authorization, 'Bearer two-key');
 		assert.ok(!JSON.stringify(payload).includes('one-key'));
 		assert.ok(!JSON.stringify(payload).includes('two-key'));

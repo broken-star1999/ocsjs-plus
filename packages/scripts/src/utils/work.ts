@@ -6,6 +6,7 @@ import {
 	AnswererWrapper,
 	SearchInformation,
 	WorkContext,
+	AnswerWrapperHandlerConfig,
 	$
 } from '@ocsjs/core';
 import { $ui, $message, MessageElement, Script, h, CommonEventEmitter, cors, $elements } from 'easy-us';
@@ -21,6 +22,7 @@ import {
 	createImageSuggestion,
 	imageToBase64,
 	ImageSuggestionResult,
+	AnswererOptionItem,
 	isAnswererWrappersSupportImageOptimize
 } from './answerer-env';
 
@@ -512,23 +514,27 @@ export const closeAnswerWrapperEmptyWarning = cors.defineTopFunction(() => {
 	answererWrapperUnsetMessage = undefined;
 });
 
+interface AnswererTextResult {
+	text: string;
+	images?: string[];
+	items?: AnswererOptionItem[];
+}
+
 /**
  * 创建通用的 answerer 回调，封装搜题缓存、延迟、env 构建、AI 图片建议等公共逻辑
- * @param options.titleTransform 标题转换函数，接收 (elements, ctx)，返回字符串标题
- * @param options.optionsTransform 选项转换函数（可选），接收 (elements, ctx)，返回选项文本字符串；
- *   默认取 ctx.elements.options 的 innerText 拼接
+ * @param options.titleTransform 标题处理方法，接收元素及题目上下文
+ * @param options.optionsTransform 选项处理方法；可保留逐项 items，不从合并文本重新拆分选项
+ *   默认保留 innerText 作为原有题库文本，另从真实 DOM 提取客观题分组与图片
  * @param options.answererWrappers 题库配置
  * @param options.period 搜题间隔（秒），默认 1
  */
 export function createCommonAnswerer(options: {
 	titleTransform: (elements: any, ctx: WorkContext<any>) => string | { text: string; images?: string[] };
-	optionsTransform?: (elements: any, ctx: WorkContext<any>) => string | { text: string; images?: string[] };
+	optionsTransform?: (elements: any, ctx: WorkContext<any>) => string | AnswererTextResult;
 	answererWrappers: AnswererWrapper[];
 	period?: number;
 }) {
-	const normalize = (
-		v: string | { text: string; images?: string[] } | undefined
-	): { text: string; images?: string[] } => {
+	const normalize = (v: string | AnswererTextResult | undefined): AnswererTextResult => {
 		if (v == null) return { text: '' };
 		return typeof v === 'string' ? { text: v } : v;
 	};
@@ -540,10 +546,12 @@ export function createCommonAnswerer(options: {
 
 	return async (elements: any, ctx: WorkContext<any>): Promise<SearchInformation[]> => {
 		const ensembles = options.answererWrappers.flatMap((wrapper) => (wrapper.aiEnsemble ? [wrapper.aiEnsemble] : []));
-		if (ensembles.length) {
+		const basicModels = options.answererWrappers.flatMap((wrapper) => (wrapper.ai ? [wrapper.ai] : []));
+		if (ensembles.length || basicModels.length) {
 			const timeout = (config: { timeoutSeconds?: number }) =>
-				Math.min(180_000, Math.max(1000, (config.timeoutSeconds ?? 60) * 1000));
+				Math.min(180_000, Math.max(1000, (config.timeoutSeconds ?? AnswerWrapperHandlerConfig.timeout_seconds) * 1000));
 			const budget = Math.max(
+				...basicModels.map(timeout),
 				...ensembles.map(
 					(config) =>
 						Math.max(0, ...config.models.map(timeout)) +
@@ -563,14 +571,26 @@ export function createCommonAnswerer(options: {
 		const titleImages = titleResult.images;
 
 		const search = async () => {
+			const assertActive = async () => {
+				await ctx.waitUntilActive?.();
+				if (ctx.isClosed?.()) throw new Error('原答题任务已关闭，已停止搜题。');
+			};
 			await $.sleep((options.period ?? 1) * 1000);
+			await assertActive();
+			const defaultOptions: HTMLElement[] | undefined = !options.optionsTransform
+				? (ctx.elements.options ?? []).filter((option): option is HTMLElement => !!option)
+				: undefined;
+			const defaultItems =
+				defaultOptions && ['single', 'multiple', 'judgement'].includes(ctx.type || '')
+					? defaultOptions.map((option) => extractTextWithImages(option))
+					: undefined;
 			const optResult = normalize(
 				options.optionsTransform
 					? options.optionsTransform(elements, ctx)
-					: (ctx.elements.options ?? [])
-							.filter(Boolean)
-							.map((o: HTMLElement | undefined) => o!.innerText)
-							.join('\n')
+					: {
+							text: defaultOptions!.map((option) => option.innerText).join('\n'),
+							...(defaultItems ? { images: defaultItems.flatMap((item) => item.images), items: defaultItems } : {})
+					  }
 			);
 			const questionHasImages =
 				(titleImages?.length ?? 0) + (optResult.images?.length ?? 0) > 0 ||
@@ -590,6 +610,7 @@ export function createCommonAnswerer(options: {
 				options: optResult.text,
 				titleImages,
 				optionsImages: optResult.images,
+				optionItems: ['single', 'multiple', 'judgement'].includes(ctx.type || '') ? optResult.items : undefined,
 				enableImageOptimize: CommonProject.scripts.settings.cfg.imageOptimize
 			});
 			// 已开启优化但全部图片转换失败（CORS/防盗链极端情况）：此前静默回退普通题，显式提示
@@ -610,6 +631,10 @@ export function createCommonAnswerer(options: {
 				env.option_count = (ctx.elements.options || []).filter(Boolean).length;
 			}
 			if (ctx.onSearchProgress) env.onProgress = (info: SearchInformation) => ctx.onSearchProgress!([info]);
+			// The same task gate must also reach a summary started after participant calls settle.
+			env.beforeRequest = assertActive;
+			// Pausing/closing during image preparation must prevent a new paid request.
+			await assertActive();
 			const searchInfos = await defaultAnswerWrapperHandler(options.answererWrappers, env);
 			// 将 AI 答案中的 [图片N] 占位符还原为对应图片 URL，使选项匹配可以命中图片选项。
 			// imageUrls 与实际上传的 env.images 严格同序（createImageSuggestion 单一数据源，含转换失败过滤）。

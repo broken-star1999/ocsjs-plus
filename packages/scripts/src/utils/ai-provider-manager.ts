@@ -9,6 +9,7 @@ import {
 	AI_API_KEY_STORAGE,
 	aiModelKey,
 	getAIKeyStorage,
+	getAIAuthMode,
 	listAIModels,
 	normalizeAIEndpoint,
 	searchAIAnswer,
@@ -22,6 +23,8 @@ import {
 export interface AIProviderManagerOptions {
 	read: () => AIProviderState;
 	write: (state: AIProviderState) => void;
+	/** Credential writes are intentionally separate from the serializable provider metadata. */
+	onCredentialsChange?: () => void;
 }
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -83,6 +86,10 @@ const style = `
 .ocs-ai-manager .model-controls{display:flex;gap:8px;flex-wrap:wrap}
 .ocs-ai-manager .field{display:grid;grid-template-columns:110px minmax(0,1fr);gap:12px;align-items:center;margin:12px 0}
 .ocs-ai-manager .field input,.ocs-ai-manager .field select,.ocs-ai-manager textarea,.ocs-ai-manager .search{width:100%;min-width:0;padding:8px;border:1px solid #cdd5e0;border-radius:7px;color:inherit;background:transparent}
+.ocs-ai-manager .auth-toggle{display:flex;align-items:center;gap:10px;margin:8px 0 12px 122px;font-size:13px;cursor:pointer}
+.ocs-ai-manager .auth-toggle .base-style-switch{flex:0 0 48px;width:48px;margin:0;cursor:pointer}
+.ocs-ai-manager .auth-toggle input:focus-visible{outline:2px solid #4263eb;outline-offset:3px}
+.ocs-ai-manager .auth-toggle input:disabled{cursor:not-allowed;opacity:.55}
 .ocs-ai-manager .actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.ocs-ai-manager .model-row{border-top:1px solid #e2e8f0;padding:10px 0;flex-wrap:nowrap}
 .ocs-ai-manager .model-name{flex:1;min-width:0;overflow-wrap:anywhere}.ocs-ai-manager .badge{font-size:12px;color:#4263eb;margin-left:8px}
 .ocs-ai-manager .status{padding:10px 12px;background:#4263eb0d;border-radius:7px;margin-bottom:14px;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -96,7 +103,7 @@ const style = `
 .ocs-ai-picker .provider-icon{display:grid;place-items:center;flex:0 0 42px;width:42px;height:42px;border-radius:12px;font-size:18px;font-weight:700;background:#4263eb12;color:#4263eb}
 .ocs-ai-picker .provider-icon.mimo{background:#ff690014;color:#e65e00;font-size:24px}.ocs-ai-picker .provider-icon.openai{background:#10977f14;color:#10977f}.ocs-ai-picker .provider-icon.custom{background:#71809614;color:#718096;font-size:28px;font-weight:400}
 .ocs-ai-picker .picker-note{margin:16px 0 0;line-height:1.6}.ocs-ai-picker .picker-empty{grid-column:1/-1;padding:28px 8px;text-align:center}
-@media(max-width:700px){.ocs-ai-manager .workbench{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.ocs-ai-manager aside{border:0;max-height:130px}.ocs-ai-manager .field{grid-template-columns:1fr;gap:4px}.ocs-ai-manager .model-row{flex-wrap:wrap}}
+@media(max-width:700px){.ocs-ai-manager .workbench{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.ocs-ai-manager aside{border:0;max-height:130px}.ocs-ai-manager .field{grid-template-columns:1fr;gap:4px}.ocs-ai-manager .auth-toggle{margin-left:0}.ocs-ai-manager .model-row{flex-wrap:wrap}}
 @media(max-width:480px){.ocs-ai-picker .provider-grid{grid-template-columns:1fr}.ocs-ai-picker .provider-card{min-height:80px;padding:12px}}
 @media(hover:none){.ocs-ai-manager .source-remove{opacity:1;visibility:visible;pointer-events:auto}}
 `;
@@ -122,6 +129,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 	let endpointInput: HTMLInputElement;
 	let timeoutInput: HTMLInputElement;
 	let keyInput: HTMLInputElement;
+	let noKeyInput: HTMLInputElement;
 
 	const notify = (text: string, error = false) => {
 		status.textContent = text;
@@ -195,6 +203,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 							name,
 							preset: card.id === 'custom' ? 'openai' : card.id,
 							endpoint: card.endpoint,
+							authMode: 'api-key',
 							timeoutSeconds: 120,
 							models: [],
 							catalog: []
@@ -233,17 +242,20 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			...draft,
 			name: nameInput.value,
 			endpoint: endpointInput.value,
+			authMode: noKeyInput.checked ? 'none' : 'api-key',
 			timeoutSeconds: Number(timeoutInput.value),
 			models: old?.models || draft.models,
 			catalog: old?.catalog || draft.catalog
 		};
 		const state = saveAISource(options.read(), next);
 		const storage = getAIKeyStorage(next.endpoint, next.id);
+		const credentialsChanged = !!keyInput.value.trim() || clearKey;
 		if (keyInput.value.trim()) GM_setValue(storage, keyInput.value.trim());
 		else if (clearKey) GM_deleteValue(storage);
 		keyInput.value = '';
 		requests.set(next.id, (requests.get(next.id) || 0) + 1);
 		options.write(state);
+		if (credentialsChanged) options.onCredentialsChange?.();
 		draft = clone(state.sources.find((source) => source.id === next.id)!);
 		dirty = false;
 		clearKey = false;
@@ -256,7 +268,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 		requests.set(source.id, requestId);
 		notify('正在获取 ' + source.name + ' 的模型列表…');
 		try {
-			const catalog = await listAIModels(source.endpoint, source.id);
+			const catalog = await listAIModels(source.endpoint, source.id, source.authMode);
 			const state = options.read();
 			const current = state.sources.find((item) => item.id === source.id);
 			if (
@@ -332,6 +344,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 				endpoint: source.endpoint,
 				providerName: source.name,
 				sourceId: source.id,
+				authMode: source.authMode,
 				model: model.id,
 				vision: model.vision,
 				extraBody: model.extraBody,
@@ -448,7 +461,13 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 				options.write(deleteAISource(options.read(), source.id));
 				requests.delete(source.id);
 				const prefix = AI_API_KEY_STORAGE + ':' + encodeURIComponent(source.id) + ':';
-				for (const key of GM_listValues()) if (key.startsWith(prefix)) GM_deleteValue(key);
+				let credentialsChanged = false;
+				for (const key of GM_listValues())
+					if (key.startsWith(prefix)) {
+						GM_deleteValue(key);
+						credentialsChanged = true;
+					}
+				if (credentialsChanged) options.onCredentialsChange?.();
 			}
 			if (source.id === selectedId) {
 				dirty = false;
@@ -506,20 +525,56 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			autocomplete: 'new-password',
 			placeholder: '输入 API Key；留空保留已有密钥'
 		});
-		let hasKey = false;
+		noKeyInput = h('input', { type: 'checkbox', className: 'base-style-switch' });
+		noKeyInput.setAttribute('role', 'switch');
+		noKeyInput.setAttribute('aria-label', '无需 API Key');
 		try {
-			hasKey = !!GM_getValue(getAIKeyStorage(draft.endpoint, draft.id), '');
+			noKeyInput.checked = getAIAuthMode(draft) === 'none';
 		} catch {
-			/* New source */
+			noKeyInput.checked = draft.authMode === 'none';
 		}
-		for (const input of [nameInput, endpointInput, timeoutInput, keyInput])
+		for (const input of [nameInput, timeoutInput])
 			input.oninput = () => {
 				dirty = true;
 			};
-		const keyStatus = h(
-			'small',
-			hasKey ? '当前接口已保存密钥，留空即可保留。' : '当前接口尚未设置密钥。本地无鉴权服务可留空。'
-		);
+		const keyStatus = h('small', { role: 'status' });
+		const updateKeyStatus = () => {
+			let hasKey = false;
+			try {
+				const noAuthAllowed = getAIAuthMode({ endpoint: endpointInput.value, authMode: 'none' }) === 'none';
+				noKeyInput.disabled = !noAuthAllowed;
+				noKeyInput.title = noAuthAllowed ? '仅用于本身无需密钥的自定义服务' : '该官方接口需要 API Key';
+				if (!noAuthAllowed) noKeyInput.checked = false;
+			} catch {
+				/* A new source may not have a valid endpoint yet. */
+			}
+			try {
+				hasKey = !!String(GM_getValue(getAIKeyStorage(endpointInput.value, draft!.id), '')).trim();
+			} catch {
+				/* The source may not have a saved credential yet. */
+			}
+			noKeyInput.setAttribute('aria-checked', String(noKeyInput.checked));
+			keyInput.disabled = noKeyInput.checked;
+			keyStatus.textContent = keyInput.disabled
+				? '此接口无需 API Key，请求不携带鉴权头；已保存的密钥会保留。'
+				: keyInput.value.trim()
+				? '新密钥将在保存配置后生效。'
+				: clearKey
+				? '密钥将在保存配置后清除；重新填写前将跳过 AI 自动答题。'
+				: hasKey
+				? '当前接口已保存密钥，留空即可保留。'
+				: '当前接口尚未设置密钥，自动答题将跳过；无鉴权自定义服务请开启“无需 API Key”。';
+		};
+		for (const input of [endpointInput, keyInput])
+			input.oninput = () => {
+				dirty = true;
+				updateKeyStatus();
+			};
+		noKeyInput.onchange = () => {
+			dirty = true;
+			updateKeyStatus();
+		};
+		updateKeyStatus();
 		const saved = state.sources.find((source) => source.id === draft!.id);
 		const heading = h('h3', draft.name + (saved ? '' : '（未保存）'));
 		nameInput.oninput = () => {
@@ -544,6 +599,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 			]),
 			field('提供商名称', nameInput),
 			field('API Key', keyInput),
+			h('label', { className: 'auth-toggle' }, [noKeyInput, h('span', '无需 API Key')]),
 			keyStatus,
 			field('API Base URL', endpointInput),
 			field('超时（秒）', timeoutInput),
@@ -552,7 +608,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 					clearKey = true;
 					dirty = true;
 					keyInput.value = '';
-					keyStatus.textContent = '密钥将在保存配置后清除。';
+					updateKeyStatus();
 				})
 			]),
 			renderModels(saved || draft)
@@ -566,6 +622,7 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 	const modal: HTMLDivElement | undefined = $modal.simple({
 		title: '模型提供商',
 		width: 1000,
+		modalStyle: { maxWidth: 'calc(100vw - 32px)', boxSizing: 'border-box' },
 		content: root,
 		footer: h('div', {}, [
 			button('关闭', () => {

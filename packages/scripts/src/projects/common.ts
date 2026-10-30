@@ -46,7 +46,7 @@ import {
 	requestReviewAction
 } from '../utils/question-retry-control';
 import { createAIConsensusSettingsButton } from '../utils/ai-consensus-settings';
-import { createAIWorkSummary } from '../utils/ai-work-status';
+import { createAIWorkSummary, inspectAIWorkConfiguration } from '../utils/ai-work-status';
 import { isAIQuestionCacheSource } from '../utils/question-cache';
 import { readSearchSelection, expandSearchImages, SearchSelection } from '../utils/online-search-selection';
 import {
@@ -273,6 +273,7 @@ export const CommonProject = Project.create({
 				aiVision: { defaultValue: false },
 				aiProviders: { defaultValue: [] as AIProviderSource[] },
 				aiProvidersMigrated: { defaultValue: false },
+				aiCredentialsRevision: { defaultValue: 0 },
 				aiModelThreads: { defaultValue: [] as AIModelThreads[] },
 				aiConsensusThreshold: { defaultValue: 100 },
 				aiConfidenceEnabled: { defaultValue: false },
@@ -354,6 +355,7 @@ export const CommonProject = Project.create({
 										'aiEnabled',
 										'aiAnswerMode',
 										'aiProviders',
+										'aiCredentialsRevision',
 										'aiSelectedModel',
 										'aiModelThreads',
 										'aiConsensusThreshold',
@@ -388,6 +390,9 @@ export const CommonProject = Project.create({
 								write: (state) => {
 									settings.cfg.aiProviders = state.sources;
 									settings.cfg.aiSelectedModel = state.selection;
+								},
+								onCredentialsChange: () => {
+									settings.cfg.aiCredentialsRevision++;
 								}
 							});
 						};
@@ -1030,7 +1035,7 @@ export const CommonProject = Project.create({
 				upload: {
 					label: '答案提交方式（提交率）',
 					tag: 'select',
-					defaultValue: 'save' as WorkUploadType,
+					defaultValue: 80 as WorkUploadType,
 					options: [
 						[
 							'save',
@@ -1925,11 +1930,13 @@ export const CommonProject = Project.create({
 				onlineSelectionListeners.add(onSelection);
 
 				const search = async (value: string) => {
-					const wrappers = CommonProject.scripts.settings.methods.getWorkOptions().answererWrappers;
-					if (wrappers.length === 0) {
-						$modal.alert({ content: '请先在 通用-全局设置 选择 AI 答题模型或配置题库。' });
+					const workOptions = CommonProject.scripts.settings.methods.getWorkOptions();
+					const readiness = inspectAIWorkConfiguration(workOptions);
+					if (!readiness.ready) {
+						$modal.alert({ content: readiness.error });
 						return;
 					}
+					const wrappers = workOptions.answererWrappers;
 
 					content.replaceChildren(h('span', '搜索中...'));
 
