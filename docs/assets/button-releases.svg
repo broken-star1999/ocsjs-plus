@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="208" height="56" viewBox="0 0 208 56" role="img" aria-labelledby="releases-title releases-desc" font-family="'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title id="releases-title">版本下载</title>
+  <desc id="releases-desc">深海军蓝色描边圆角按钮，包含分层版本包线框图标，文字为版本下载。</desc>
+  <rect x="0.5" y="3.5" width="207" height="49" rx="12" fill="#151F30" stroke="#34445E"/>
+  <g fill="none" stroke="#8CA7FF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="m29 22 11-6 11 6-11 6z"/>
+    <path d="m29 28 11 6 11-6 M29 34 l11 6 11-6"/>
+  </g>
+  <text x="73" y="35" fill="#EDF3FF" font-size="18" font-weight="600">版本下载</text>
+</svg>

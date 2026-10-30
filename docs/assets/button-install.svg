@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="208" height="56" viewBox="0 0 208 56" role="img" aria-labelledby="install-title install-desc" font-family="'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <title id="install-title">安装正式版</title>
+  <desc id="install-desc">薄荷青色圆角按钮，包含向下箭头与安装托盘图标，文字为安装正式版。</desc>
+  <rect x="0.5" y="3.5" width="207" height="49" rx="12" fill="#68E0CB" stroke="#88EBD9"/>
+  <g fill="none" stroke="#102C28" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M40 17 V31 M34 25 l6 6 6-6"/>
+    <path d="M30 32 V38 H50 V32"/>
+  </g>
+  <text x="68" y="35" fill="#102C28" font-size="18" font-weight="700">安装正式版</text>
+</svg>
