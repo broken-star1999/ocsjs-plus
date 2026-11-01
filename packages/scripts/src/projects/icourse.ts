@@ -546,14 +546,14 @@ export const ICourseProject = Project.create({
 
 							await remotePage?.click(getCurrentLesson());
 							// 判断章节
-							let nextLesson =
+							const nextLesson =
 								getCurrentLesson().nextElementSibling?.querySelector('button.text-primary-700')?.nextElementSibling;
 
 							if (nextLesson) {
 								return [() => nextLesson];
 							}
 							await remotePage?.click(getCurrentChapter());
-							let nextChapter =
+							const nextChapter =
 								getCurrentChapter().nextElementSibling?.querySelector('button.text-primary-700')?.nextElementSibling;
 
 							if (nextChapter) {
@@ -584,7 +584,6 @@ export const ICourseProject = Project.create({
 				// 课件首页
 				if (document.querySelector('[class="course-content-card"]')) {
 					$message.info({ content: '请手动进入视频、作业页面，脚本会自动运行。', duration: 10 });
-					return;
 				} else {
 					this.methods.main();
 				}
@@ -1223,10 +1222,11 @@ async function discussion_v2(
 async function networkIdleRequire(rp: RemotePage, cb: () => void | Promise<void>) {
 	await cb();
 	// ux-modal  ux-modal-fadeIn
+	// 探测式等待：弹窗不出现是正常情况，waitFor 超时现在会抛异常，这里吞掉并视为无弹窗
 	const modal = await waitFor(() => document.querySelector('.ux-modal_content_content'), {
 		check_period_ms: 200,
 		timeout_seconds: 1
-	});
+	}).catch(() => undefined);
 	if (modal) {
 		const msg = $message.warn('答题速度过快导致并发限制、3秒后再继续答题。');
 		await rp.click('.ux-modal-btn');

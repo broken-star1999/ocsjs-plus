@@ -277,12 +277,12 @@ export const YKTProject = Project.create({
 									$console.warn('作业 iframe 无法访问（可能跨域），跳过自动答题。');
 								} else {
 									$message.info('检测到作业任务点，等待作业页面加载...');
-									// 等 iframe 内题目区域渲染（waitForElement 超时单位：秒，超时时 resolve undefined）
+									// 等 iframe 内题目区域渲染；waitFor 超时现在会抛异常，这里吞掉并视为加载失败，跳过自动答题
 									const questionRoot = await waitForElement(
 										() =>
 											exerciseIframe.contentDocument?.querySelector<HTMLElement>('.container-problem .subject-item'),
 										{ timeout_seconds: 20, check_period_ms: 200 }
-									);
+									).catch(() => undefined);
 									if (!questionRoot) {
 										$console.warn('作业页面加载超时，跳过自动答题。');
 									} else {
@@ -347,14 +347,11 @@ async function autoCommentYktForum(forum: HTMLElement, discussMode: 'random' | '
 		return;
 	}
 
-	// 等待输入框渲染（waitForElement 超时 resolve undefined）
+	// 等待输入框渲染（waitFor 超时抛出异常，信息由 timeout_message 指定）
 	const textarea = (await waitForElement(
 		() => forum.querySelector<HTMLTextAreaElement>('.forum-publish textarea.el-textarea__inner'),
-		{ timeout_seconds: 20, check_period_ms: 500 }
-	)) as HTMLTextAreaElement | undefined;
-	if (!textarea) {
-		throw new Error('讨论区输入框加载超时。');
-	}
+		{ timeout_seconds: 20, check_period_ms: 500, timeout_message: '讨论区输入框加载超时。' }
+	)) as HTMLTextAreaElement;
 
 	const discusses = Array.from(forum.querySelectorAll('.forum-content .forum-item .comment-text'))
 		.map((el) => (el.textContent || '').trim())
@@ -370,13 +367,12 @@ async function autoCommentYktForum(forum: HTMLElement, discussMode: 'random' | '
 	textarea.dispatchEvent(new Event('input', { bubbles: true }));
 
 	// 填充后等待发送按钮解除禁用（.disabled 状态下点击无效）
-	const send_btn = await waitForElement(() => forum.querySelector<HTMLElement>('.prompt-send-btn:not(.disabled)'), {
+	// waitFor resolve 时已保证元素存在（超时走 reject），此处断言为非空
+	const send_btn = (await waitForElement(() => forum.querySelector<HTMLElement>('.prompt-send-btn:not(.disabled)'), {
 		timeout_seconds: 10,
-		check_period_ms: 500
-	});
-	if (!send_btn) {
-		throw new Error('讨论区发送按钮未解除禁用，评论提交失败。');
-	}
+		check_period_ms: 500,
+		timeout_message: '讨论区发送按钮未解除禁用，评论提交失败。'
+	})) as HTMLElement;
 	send_btn.click();
 	await $.sleep(1000);
 }
@@ -420,11 +416,21 @@ async function setupYuketangFontDecrypt(doc: Document = document) {
 	// 注意：不能用 waitForElement——它写死全局 document，而加密文字可能在
 	// iframe 的 document 里（会白等整个超时）。这里按 doc 短轮询，即时命中。
 	const waitStart = Date.now();
+	// 正文已渲染且连续多次轮询均无密文：本题无加密文字（如纯公式题），提前放行，
+	// 迟到的密文仍由下方 watchElements 监听器兜底解密
+	let noCipherStable = 0;
 	while (!doc.querySelector(YKT_ENCRYPTED_SELECTOR) && Date.now() - waitStart < 3000) {
+		const bodyRendered = !!doc.querySelector('.container-problem .problem-body, .exam-body, .subject-item');
+		noCipherStable = bodyRendered ? noCipherStable + 1 : 0;
+		if (noCipherStable >= 3) {
+			$console.log('题目已渲染且未检测到加密文字，跳过初始解密等待。');
+			break;
+		}
 		await $.sleep(200);
 	}
 	if (!doc.querySelector(YKT_ENCRYPTED_SELECTOR)) {
 		$console.log('暂未检测到加密文字，将持续监听页面变化。');
+		dec_msg?.remove();
 	}
 
 	let firstDecrypt = true;
@@ -705,7 +711,8 @@ async function submitYktCurrentQuestion(doc: Document, order: string): Promise<b
 /**
  * 等待当前题目"可用"。就绪条件（需连续两次满足，防 Vue 分批渲染与解密竞态）：
  *   1. 题目标识已渲染（切题后 marker 变化）
- *   2. 正文 .problem-body 有非空文本（防止"题号先渲染、正文经 XHR 后到"时读到空/密文）
+ *   2. 正文 .problem-body 有非空文本或图片（防止"题号先渲染、正文经 XHR 后到"时读到空/密文；
+ *      纯公式题题干只有 img.kfformula，无文本）
  *   3. 无残留密文/解密中的元素（解密通过 decryptYktNow 主动触发，不依赖监听器时序）
  * 超时后放行（降级处理）。
  */
@@ -724,7 +731,10 @@ async function waitYktQuestionReady(prevMarker: string | null, doc: Document, ti
 	while (Date.now() - start < timeoutMs) {
 		// 主动解密当前密文并等待完成（幂等；无密文时立即返回）
 		await decryptYktNow(doc);
-		const hasContent = !!doc.querySelector('.container-problem .problem-body')?.textContent?.trim();
+		// 纯公式/图片题题干没有文本（仅 img.kfformula 等），图片也算有效内容，
+		// 否则会一直误判"正文未渲染"而等待到超时
+		const body = doc.querySelector('.container-problem .problem-body');
+		const hasContent = !!body?.textContent?.trim() || !!body?.querySelector('img');
 		const hasCipher = !!doc.querySelector(
 			`.container-problem ${YKT_ENCRYPTED_SELECTOR}, .container-problem .xuetangx-com-font-decrypting`
 		);
@@ -754,16 +764,31 @@ async function waitYktQuestionReady(prevMarker: string | null, doc: Document, ti
 const YKT_BLANK_INPUT_SELECTOR = 'input.blank-item-dynamic, input[placeholder="输入答案"]';
 
 /**
+ * 克隆题目元素用于文本提取，并将新版公式图片还原为 LaTeX 文本。
+ *
+ * 雨课堂新版公式题为 <img class="kfformula" src="data:image/png;base64,...">，
+ * LaTeX 源码保存在 data-latex 属性（data-slatex 为反斜杠双写的转义版，仅作兜底）。
+ * 若直接提取 img src，会向题干/选项注入大段 base64 文本导致搜题失败；
+ * 这里在克隆体上将公式图片替换为 $...$ 包裹的 LaTeX 文本（不破坏页面显示），
+ * 普通图片仍走 extractTextWithImages 的 URL 提取逻辑。
+ */
+function cloneYktForTextExtract(el: HTMLElement): HTMLElement {
+	const clone = el.cloneNode(true) as HTMLElement;
+	for (const img of Array.from(clone.querySelectorAll('img.kfformula'))) {
+		const latex = img.getAttribute('data-latex') || (img.getAttribute('data-slatex') || '').replace(/\\\\/g, '\\');
+		img.replaceWith(latex.trim() ? ` $${latex}$ ` : ' [公式] ');
+	}
+	return clone;
+}
+
+/**
  * 提取题干文本：横线填空题的答案输入框（placeholder="输入答案"）无文本内容，
  * 提取时会"消失"导致题库无法识别这是填空题；
  * 这里先克隆元素并把每个横线输入框替换为 ____ 文本再提取，
  * 如 "…内容包括：____、____、____、____。"
  */
 function extractYktTitleText(el: HTMLElement): string {
-	if (!el.querySelector(YKT_BLANK_INPUT_SELECTOR)) {
-		return extractTextWithImages(el).text;
-	}
-	const clone = el.cloneNode(true) as HTMLElement;
+	const clone = cloneYktForTextExtract(el);
 	for (const input of Array.from(clone.querySelectorAll(YKT_BLANK_INPUT_SELECTOR))) {
 		input.replaceWith('____');
 	}
@@ -780,7 +805,8 @@ function createYktAnswerWorker({
 	const redundanceWords = redundanceWordsText.split('\n').filter(Boolean);
 	const titleTransform = (titles: (HTMLElement | undefined)[]) =>
 		titles
-			.filter((t) => t?.innerText)
+			// 纯公式/图片题干 innerText 为空但仍是有效题目（公式会提取为 LaTeX 文本），不能过滤
+			.filter((t) => !!t && (!!t.textContent?.trim() || !!t.querySelector('img')))
 			.map((t) =>
 				t
 					? removeRedundantWords(
@@ -803,7 +829,8 @@ function createYktAnswerWorker({
 			return { text: '错', images: [] };
 		}
 		const textEl = option.querySelector('.radioText, .checkboxText');
-		return extractTextWithImages((textEl as HTMLElement) ?? option);
+		// 公式图转为 LaTeX，普通图片仍保留在当前选项分组中供 AI 输入。
+		return extractTextWithImages(cloneYktForTextExtract((textEl as HTMLElement) ?? option));
 	};
 	const optionText = (option: HTMLElement) => optionExtract(option).text;
 
@@ -1127,7 +1154,7 @@ function createYktEmbeddedWorkLoop(opts: CommonWorkOptions, doc: Document, onDon
 		if (!completedAll) {
 			$message.warn({
 				content: `题目未全部完成（已作答提交 ${finishCount}/${results.length} 题），请手动检查剩余题目。`,
-				duration: 0
+				duration: 60
 			});
 		} else {
 			$message.success({ content: `作业完成，全部 ${finishCount} 题已作答并逐题提交。` });
@@ -1156,15 +1183,14 @@ async function watch(options: { volume: number; playbackRate: number }) {
 		}
 
 		const media = (await waitForElement('video', {
-			timeout_seconds: 10 * 1000
-		})) as HTMLMediaElement | undefined;
+			timeout_seconds: 10 * 1000,
+			timeout_message: '视频元素加载超时'
+		})) as HTMLMediaElement;
 		console.log('media', media);
 		await $.sleep(1000);
-		if (media) {
-			state.study.currentMedia = media;
-			// 重置视频进度
-			media.currentTime = 1;
-		}
+		state.study.currentMedia = media;
+		// 重置视频进度
+		media.currentTime = 1;
 		return media;
 	};
 	$message.info('开始播放');
@@ -1249,20 +1275,19 @@ async function ai_watch(options: { volume: number; playbackRate: number }) {
 		// 上面操作会导致元素刷新，这里重新获取视频
 		await $.sleep(1000);
 		const media = (await waitForElement('.detail-container video', {
-			timeout_seconds: 10 * 1000
+			timeout_seconds: 10 * 1000,
+			timeout_message: 'AI数字人视频元素加载超时'
 		})) as HTMLMediaElement;
 		console.log('media', media);
 		await $.sleep(1000);
 		state.study.currentMedia = media;
 		state.study.is_ai_watch_mode = true;
 
-		if (media) {
-			// 如果已经播放完了，则重置视频进度
-			media.currentTime = 1;
-			// 音量
-			media.volume = options.volume;
-			media.playbackRate = options.playbackRate;
-		}
+		// 如果已经播放完了，则重置视频进度
+		media.currentTime = 1;
+		// 音量
+		media.volume = options.volume;
+		media.playbackRate = options.playbackRate;
 		return state.study.currentMedia;
 	};
 	$message.info('开始播放');

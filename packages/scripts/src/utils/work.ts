@@ -533,6 +533,12 @@ export function createCommonAnswerer(options: {
 	optionsTransform?: (elements: any, ctx: WorkContext<any>) => string | AnswererTextResult;
 	answererWrappers: AnswererWrapper[];
 	period?: number;
+	/**
+	 * 每次搜题前的前置钩子（在提取题目前执行）。
+	 * 用于超星字体解密等场景：题目文本提取依赖前置处理（解密 DOM 替换）完成，
+	 * 否则第一题会以密文搜题导致乱码。
+	 */
+	beforeSearch?: (ctx: WorkContext<any>) => Promise<void> | void;
 }) {
 	const normalize = (v: string | AnswererTextResult | undefined): AnswererTextResult => {
 		if (v == null) return { text: '' };
@@ -563,6 +569,8 @@ export function createCommonAnswerer(options: {
 			// 图片准备、搜题间隔和顺序总结都必须在解析器的等待窗口内。
 			ctx.searchDeadline = Date.now() + budget + 60_000 + (options.period ?? 1) * 1000;
 		}
+		// 搜题前置钩子（如等待字体解密完成），必须在提取题目前执行
+		await options.beforeSearch?.(ctx);
 		const titleResult = normalize(options.titleTransform(elements, ctx));
 		const title = titleResult.text;
 		if (!title) {

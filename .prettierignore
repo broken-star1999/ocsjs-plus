@@ -1,8 +1,11 @@
 node_modules
 dist
 lib
+.codebuddy
+.temp
 package-lock.json
 pnpm-lock.yaml
 public
 stats.html
 .md
+packages/scripts/assets/css/style.css

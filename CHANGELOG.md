@@ -1,5 +1,14 @@
 # Changelog
 
+## 未发布
+
+* 同步原版 OCS 5.2.4–5.2.6，基线更新至 `6b41cf2016438afd756d21efa9e6a82c21735b3f`；保留 Plus 独立版本号与发布源。
+* 合入学习通字体解密预载、每次搜题前守卫和增量解密，保留 AI 图片分组、联合决策、单题重做和暂停／关闭检查。
+* 合入学习通切章、雨课堂公式题和视频、智慧树视频适配，以及字体缓存、存储写入和构建流程更新。
+* 跟随上游将题库缓存改为当前页面的内存缓存，保留传统题库缓存与 AI 答案隔离；配置同步使用新版依赖的监听和批量写入机制。
+* 修正智慧树新增 iframe 视频流程中的完成通知键及等待时间单位，避免视频加载失败或超时后长时间停留。
+* 补充异步字体守卫、晚渲染图片、公式选项、配置回写与视频状态通知的回归测试；28 套自动化测试、完整构建、格式及 ESLint 检查通过，浏览器模拟验收通过 63 项功能、16 项布局及 4 项主窗与配置检查。
+
 ## OCS Plus 0.1.5 (2026-10-30)
 
 改进图片题的选项对应、供应商鉴权和任务生命周期，修复兼容性及结果渲染问题。原版 OCS 基线保持 5.2.3。
@@ -149,6 +158,39 @@ OCS Plus 首个独立发布版本，基于 OCS 5.2.3 扩展。
 * 安装 ocs.user.js 后，在 AI 设置中添加提供商、填写密钥、获取并添加模型，再选择答题模型并开启 AI。
 * AI 无法确定答案、返回格式异常或选项匹配失败时会跳过该题，不会自动切换到其他提供商或题库。
 * 自动化测试、构建和本地模拟交互已通过；真实 AI 接口调用至课程页面回填的完整流程尚未实测，图片能力取决于实际模型和服务。
+
+## [5.2.6](https://github.com/ocsjs/ocsjs/compare/5.2.5...5.2.6) (2026-11-01)
+
+
+### 🐛 问题修复
+
+* 修复超星第一题繁体乱码，字体解密改为预载+每次搜题前守卫+增量解密 ([fdab3c9](https://github.com/ocsjs/ocsjs/commit/fdab3c9e5fcab5b40053a54d37ad93b81bb5d427))
+* 紧急修复easy-us更新导致的脚本卡死问题 ([10eb0bd](https://github.com/ocsjs/ocsjs/commit/10eb0bdc4d765ae339fab92e12b84960f5699fe2))
+
+## [5.2.5](https://github.com/ocsjs/ocsjs/compare/5.2.4...5.2.5) (2026-10-31)
+
+
+### 🐛 问题修复
+
+* 修复 GitHub Actions 构建报错（eslint 规则与 prettier 格式） ([812bb3e](https://github.com/ocsjs/ocsjs/commit/812bb3e330da59db501d6aa0bc52e6eff378bcf5))
+* 修复 release-please changelog 缺少 feat/fix 等分段 ([0140810](https://github.com/ocsjs/ocsjs/commit/0140810c2e41455c6ef52b706cf0461f0fa7fcef))
+* 修复雨课堂仅公式题目下为空的问题、移除开发者工具提示 ([57204be](https://github.com/ocsjs/ocsjs/commit/57204be238339161d071e900051758322ade5117))
+
+
+### ⚡ 优化改进
+
+* 字体特征表持久化缓存迁移至 CacheStorage ([3ad329a](https://github.com/ocsjs/ocsjs/commit/3ad329ab87dd7819bb0f4677a674a43fa638637e))
+* 题库缓存与日志的 GM 存储写入优化，开发者面板增加存储占用排查 ([a894a32](https://github.com/ocsjs/ocsjs/commit/a894a329da92010c3032883f7774cffd057a25fa))
+
+## [5.2.4](https://github.com/ocsjs/ocsjs/compare/5.2.3...5.2.4) (2026-10-30)
+
+
+* waitFor 超时改为抛出异常，审查并适配全部调用点 ([adedede](https://github.com/ocsjs/ocsjs/commit/adededeb54fb056b5d4b6a0f85d0ee9836205598))
+* 优化超星自动下一章的算法 ([8995a79](https://github.com/ocsjs/ocsjs/commit/8995a7940c98335b562d6679b07915fde98d423d))
+* 优化题库在electron中连接失败等错误显示 ([29b645c](https://github.com/ocsjs/ocsjs/commit/29b645c144fa50e41360d273292f3613f4cb3df0))
+* 修复超星字体解密时序问题，特征表增加持久化缓存与条件请求校验 ([feee3a9](https://github.com/ocsjs/ocsjs/commit/feee3a98cbdf352969a343430f05e8b17b3c8298))
+* 适配最新智慧树AI教学中心视频学习 ([025d006](https://github.com/ocsjs/ocsjs/commit/025d006367117434d3df85dfbc281cb620e1900d))
+* 适配雨课堂最新的latex公式题目 ([aace5ec](https://github.com/ocsjs/ocsjs/commit/aace5ecfce3c396a2f4f6dfd3aa3c6bd2307e64c))
 
 ## [5.2.3](https://github.com/ocsjs/ocsjs/compare/5.2.2...5.2.3) (2026-10-23)
 
