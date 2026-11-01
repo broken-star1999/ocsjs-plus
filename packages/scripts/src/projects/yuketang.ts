@@ -14,6 +14,7 @@ import { CommonProject } from './common';
 import { $console, BackgroundProject } from './background';
 import { FontDecryptor, findFontUrls, listFontFaces, watchElements } from '../utils/font-decrypt';
 import type { WatchController } from '../utils/font-decrypt';
+import { extractYktAIContent } from '../utils/ai-ykt-content';
 import {
 	commonWork,
 	createCommonAnswerer,
@@ -803,6 +804,19 @@ function createYktAnswerWorker({
 	answerSeparators
 }: CommonWorkOptions) {
 	const redundanceWords = redundanceWordsText.split('\n').filter(Boolean);
+	const aiTitleExtract = (titles: (HTMLElement | undefined)[]) => {
+		const parts = titles
+			.filter((title): title is HTMLElement => !!title)
+			.map((title) => extractYktAIContent(title, YKT_BLANK_INPUT_SELECTOR));
+		return {
+			text: parts
+				.map((part) =>
+					removeRedundantWords(StringUtils.of(part.text).nowrap(' ').nospace().toString().trim(), redundanceWords)
+				)
+				.join(','),
+			images: parts.flatMap((part) => part.images)
+		};
+	};
 	const titleTransform = (titles: (HTMLElement | undefined)[]) =>
 		titles
 			// 纯公式/图片题干 innerText 为空但仍是有效题目（公式会提取为 LaTeX 文本），不能过滤
@@ -833,6 +847,45 @@ function createYktAnswerWorker({
 		return extractTextWithImages(cloneYktForTextExtract((textEl as HTMLElement) ?? option));
 	};
 	const optionText = (option: HTMLElement) => optionExtract(option).text;
+	const createAnswerer = (wrappers: CommonWorkOptions['answererWrappers'], forAI: boolean) =>
+		createCommonAnswerer({
+			titleTransform: (elements) => (forAI ? aiTitleExtract(elements.title) : titleTransform(elements.title)),
+			optionsTransform: (elements, ctx) => {
+				ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
+				if (ctx.type === 'completion') return '';
+				const items = (elements.options ?? []).map((option: HTMLElement) => {
+					const input = option.querySelector('input');
+					if (!forAI || input?.value === 'true' || input?.value === 'false') return optionExtract(option);
+					return extractYktAIContent((option.querySelector('.radioText, .checkboxText') as HTMLElement) ?? option);
+				});
+				return {
+					text: items.map((item: { text: string }) => item.text).join('\n'),
+					images: items.flatMap((item: { images: string[] }) => item.images),
+					items
+				};
+			},
+			answererWrappers: wrappers,
+			period
+		});
+	const aiWrappers = answererWrappers.filter((wrapper) => wrapper.ai || wrapper.aiEnsemble);
+	const bankWrappers = answererWrappers.filter((wrapper) => !wrapper.ai && !wrapper.aiEnsemble);
+	const aiAnswerer = aiWrappers.length ? createAnswerer(aiWrappers, true) : undefined;
+	const bankAnswerer = createAnswerer(bankWrappers, false);
+	const mixedAnswerers =
+		aiWrappers.length && bankWrappers.length
+			? answererWrappers.map((wrapper) => createAnswerer([wrapper], !!(wrapper.ai || wrapper.aiEnsemble)))
+			: [];
+	const answerQuestion = async (elements: any, ctx: Parameters<typeof bankAnswerer>[1]) => {
+		if (!aiAnswerer) return bankAnswerer(elements, ctx);
+		if (!bankWrappers.length) return aiAnswerer(elements, ctx);
+		// Keep traditional bank payloads unchanged even for programmatic mixed-wrapper calls.
+		ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
+		const contexts = mixedAnswerers.map(() => ({ ...ctx }));
+		const pending = mixedAnswerers.map((answerer, index) => answerer(elements, contexts[index]));
+		// Each common answerer sets its budget before awaiting; expose the longest to the worker.
+		ctx.searchDeadline = Math.max(ctx.searchDeadline || 0, ...contexts.map((context) => context.searchDeadline || 0));
+		return (await Promise.all(pending)).flat();
+	};
 
 	// OCSWorker 的 root 传字符串时会在【全局 document】上查询，
 	// 而雨课堂作业在 iframe 内（AI学伴课程页内嵌 iframe-exercise），
@@ -878,24 +931,7 @@ function createYktAnswerWorker({
 		},
 		thread: thread ?? 1,
 		answerSeparators: answerSeparators.split(',').map((s) => s.trim()),
-		answerer: createCommonAnswerer({
-			titleTransform: (elements) => titleTransform(elements.title),
-			optionsTransform: (elements, ctx) => {
-				// 顺带解析题型写入上下文
-				ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
-				if (ctx.type === 'completion') {
-					return '';
-				}
-				const items = (elements.options ?? []).map((o: HTMLElement) => optionExtract(o));
-				return {
-					text: items.map((item: { text: string }) => item.text).join('\n'),
-					images: items.flatMap((item: { images: string[] }) => item.images),
-					items
-				};
-			},
-			answererWrappers,
-			period
-		}),
+		answerer: answerQuestion,
 		work: async (ctx) => {
 			const type = ctx.type ?? defaultWorkTypeResolver(ctx) ?? 'single';
 			const resolver = createDefaultQuestionResolver(ctx, (o: HTMLElement) => optionText(o))[type];

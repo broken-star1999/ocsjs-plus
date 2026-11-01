@@ -570,7 +570,11 @@ export function createCommonAnswerer(options: {
 			ctx.searchDeadline = Date.now() + budget + 60_000 + (options.period ?? 1) * 1000;
 		}
 		// 搜题前置钩子（如等待字体解密完成），必须在提取题目前执行
-		await options.beforeSearch?.(ctx);
+		if (options.beforeSearch && ctx.prepareForRetry && !ctx.forceSearch) {
+			await ctx.prepareForRetry(() => options.beforeSearch!(ctx));
+		} else {
+			await options.beforeSearch?.(ctx);
+		}
 		const titleResult = normalize(options.titleTransform(elements, ctx));
 		const title = titleResult.text;
 		if (!title) {
