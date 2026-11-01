@@ -621,6 +621,8 @@ export function openAIProviderManager(options: AIProviderManagerOptions) {
 	render();
 	const modal: HTMLDivElement | undefined = $modal.simple({
 		title: '模型提供商',
+		// All dismissals must use the footer's unsaved-draft confirmation.
+		maskCloseable: false,
 		width: 1000,
 		modalStyle: { maxWidth: 'calc(100vw - 32px)', boxSizing: 'border-box' },
 		content: root,

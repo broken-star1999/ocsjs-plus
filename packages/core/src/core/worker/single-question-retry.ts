@@ -22,7 +22,7 @@ export interface QuestionRetryAdapter<E extends RawElements> {
 }
 
 /** 不含答案值或选中样式，仍能检测文字、图片、题型以及元素顺序发生变化。 */
-function contentSignature<E>(ctx: WorkContext<E>): string {
+function contentSignature<E>(ctx: WorkContext<E>, includeText = true): string {
 	const textWithoutAnswer = (element: HTMLElement) => {
 		const selector = 'textarea, input, iframe, [contenteditable="true"]';
 		if (element.matches(selector)) return '';
@@ -33,7 +33,7 @@ function contentSignature<E>(ctx: WorkContext<E>): string {
 	return JSON.stringify(
 		['title', 'options', 'type'].map((key) =>
 			((ctx.elements as any)[key] || []).map((element: HTMLElement) => [
-				textWithoutAnswer(element),
+				includeText ? textWithoutAnswer(element) : '',
 				element.tagName === 'IMG' ? element.getAttribute('src') : '',
 				...Array.from(element.querySelectorAll('img')).map((image) => image.getAttribute('src')),
 				element.tagName === 'INPUT' && (element as HTMLInputElement).type === 'hidden'
@@ -71,7 +71,52 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 			owners.set(original.root, owner);
 			const questionType = adapter.type(original);
 			const pageUrl = original.root.ownerDocument.location?.href;
-			const signature = contentSignature(original);
+			let signature = contentSignature(original);
+			const nonTextSignature = contentSignature(original, false);
+			let prepared = false;
+			const assertStructure = () => {
+				if (closed || worker.isClose || currentGeneration !== generation || owners.get(original.root) !== owner)
+					throw new Error('原答题任务已失效，已停止填写。');
+				if (!original.root.isConnected) throw new Error('这道题已离开当前页面，请返回题目并重新开始答题。');
+				if (original.root.ownerDocument.location?.href !== pageUrl || adapter.type(original) !== questionType) {
+					throw new Error('页面地址或题型已变化，本次重做已停止。');
+				}
+				const fresh = domSearchAll(worker.opts.elements, original.root);
+				for (const key of ['title', 'options', 'type']) {
+					const before: HTMLElement[] = ((original.elements as any)[key] || []).filter(Boolean);
+					const after: HTMLElement[] = ((fresh as any)[key] || []).filter(Boolean);
+					if (
+						before.length !== after.length ||
+						before.some((element, i) => element !== after[i] || !element.isConnected)
+					) {
+						throw new Error('题目元素已变化，请重新开始答题后再重做。');
+					}
+				}
+				if (contentSignature(original, false) !== nonTextSignature)
+					throw new Error('题干、选项或图片已变化，本次重做已停止。');
+			};
+			const assertCurrent = () => {
+				assertStructure();
+				if (contentSignature(original) !== signature) throw new Error('题干、选项或图片已变化，本次重做已停止。');
+				adapter.validate(original);
+			};
+			original.prepareForRetry = async function (this: WorkContext<E>, prepare) {
+				// Retry contexts are clones. Their preprocessing must never reset the original question identity.
+				if (this !== original || this.forceSearch) {
+					await prepare();
+					return;
+				}
+				if (prepared) assertCurrent();
+				else assertStructure();
+				await prepare();
+				assertStructure();
+				if (prepared) assertCurrent();
+				else {
+					// The first model request sees this prepared text; images, elements, page and type stay fixed.
+					signature = contentSignature(original);
+					prepared = true;
+				}
+			};
 			const run = async (candidate?: string[]) => {
 				if (closed || worker.isClose || currentGeneration !== generation || owners.get(original.root) !== owner)
 					throw new Error('原答题任务已失效，请重新开始答题。');
@@ -90,27 +135,6 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 					if (!candidate.length || candidate.some((answer) => typeof answer !== 'string' || !answer.trim()) || !exists)
 						throw new Error('候选回答已变化或不可用，请刷新结果后重新选择。');
 				}
-				const assertCurrent = () => {
-					if (closed || worker.isClose || currentGeneration !== generation || owners.get(original.root) !== owner)
-						throw new Error('原答题任务已失效，已停止填写。');
-					if (!original.root.isConnected) throw new Error('这道题已离开当前页面，请返回题目并重新开始答题。');
-					if (original.root.ownerDocument.location?.href !== pageUrl || adapter.type(original) !== questionType) {
-						throw new Error('页面地址或题型已变化，本次重做已停止。');
-					}
-					const fresh = domSearchAll(worker.opts.elements, original.root);
-					for (const key of ['title', 'options', 'type']) {
-						const before: HTMLElement[] = ((original.elements as any)[key] || []).filter(Boolean);
-						const after: HTMLElement[] = ((fresh as any)[key] || []).filter(Boolean);
-						if (
-							before.length !== after.length ||
-							before.some((element, i) => element !== after[i] || !element.isConnected)
-						) {
-							throw new Error('题目元素已变化，请重新开始答题后再重做。');
-						}
-					}
-					if (contentSignature(original) !== signature) throw new Error('题干、选项或图片已变化，本次重做已停止。');
-					adapter.validate(original);
-				};
 				assertCurrent();
 				busy = true;
 				const ctx: WorkContext<E> = {
