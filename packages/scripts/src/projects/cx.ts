@@ -16,6 +16,7 @@ import {
 } from '@ocsjs/core';
 import { createCXQuestionRetryAdapter } from '../utils/cx-question-retry';
 import { inspectAIWorkConfiguration } from '../utils/ai-work-status';
+import { extractCxAIContent } from '../utils/ai-cx-mathjax';
 import { readCXQuestionTypeCode } from '../utils/cx-question-type';
 import { crackFont, collectChars, decryptElements, extractFontFromStyle, loadRefTable } from '../utils/font-decrypt';
 import { $modal, h, $store, MessageElement, Project, Script, $el, $gm, $$el, $ui, cors, $message } from 'easy-us';
@@ -843,7 +844,8 @@ function workOrExam(
 
 	// 处理作业和考试题目的方法
 	const workOrExamQuestionTitleTransform = (
-		titles: (HTMLElement | undefined)[]
+		titles: (HTMLElement | undefined)[],
+		forAI = false
 	): { text: string; images: string[] } => {
 		// 是否为多个小题的题目
 		const is_multiple_question = titles.length > 1;
@@ -861,7 +863,7 @@ function workOrExam(
 						childNodes[0]?.remove();
 					}
 					// 结构化遍历提取文本与图片 URL（不改造 DOM、不读 innerText）
-					const extracted = extractTextWithImages(titleCloneEl);
+					const extracted = forAI ? extractCxAIContent(titleCloneEl) : extractTextWithImages(titleCloneEl);
 					images.push(...extracted.images);
 					return extracted.text;
 				}
@@ -870,11 +872,13 @@ function workOrExam(
 			.join('\n');
 
 		const text = removeRedundantWords(
-			StringUtils.of(optimizationTitle)
-				.nowrap(is_multiple_question ? '\n' : ' ')
-				.nospace()
-				.toString()
-				.trim(),
+			forAI
+				? optimizationTitle.trim()
+				: StringUtils.of(optimizationTitle)
+						.nowrap(is_multiple_question ? '\n' : ' ')
+						.nospace()
+						.toString()
+						.trim(),
 			redundanceWordsText.split('\n')
 		);
 		return { text, images };
@@ -882,6 +886,52 @@ function workOrExam(
 	/** 仅供 simplifyWorkResult 等只需文本的调用方使用 */
 	const workOrExamQuestionTitleText = (titles: (HTMLElement | undefined)[]) =>
 		workOrExamQuestionTitleTransform(titles).text;
+
+	const createAnswerer = (
+		wrappers: CommonWorkOptions['answererWrappers'],
+		forAI: boolean,
+		prepare = () => ensureCxFontDecrypted()
+	) =>
+		createCommonAnswerer({
+			// 每次搜题前确保字体解密完成（第一题乱码防护）
+			beforeSearch: prepare,
+			titleTransform: (elements, ctx) => {
+				if (elements.title) {
+					return workOrExamQuestionTitleTransform(elements.title, forAI);
+				}
+				return '';
+			},
+			optionsTransform: (elements, ctx) => {
+				const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown';
+				ctx.type = type as any;
+				if (type === 'completion') return '';
+				const optResults = (ctx.elements.options ?? [])
+					.filter(Boolean)
+					.map((o: any) => (forAI ? extractCxAIContent(o) : extractTextWithImages(o)));
+				return {
+					text: optResults.map((r) => r.text).join('\n'),
+					images: optResults.flatMap((r) => r.images),
+					items: optResults
+				};
+			},
+			answererWrappers: wrappers,
+			period
+		});
+	const hasAI = answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble);
+	const hasBank = answererWrappers.some((wrapper) => !wrapper.ai && !wrapper.aiEnsemble);
+	const normalAnswerer = createAnswerer(answererWrappers, hasAI);
+	const answerQuestion: typeof normalAnswerer = async (elements, ctx) => {
+		if (!hasAI || !hasBank) return normalAnswerer(elements, ctx);
+		const prepare = () => ensureCxFontDecrypted();
+		const preparation = ctx.prepareForRetry && !ctx.forceSearch ? ctx.prepareForRetry(prepare) : prepare();
+		ctx.type = (getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown') as any;
+		const contexts = answererWrappers.map(() => ({ ...ctx, prepareForRetry: undefined }));
+		const pending = answererWrappers.map((wrapper, index) =>
+			createAnswerer([wrapper], !!(wrapper.ai || wrapper.aiEnsemble), () => preparation)(elements, contexts[index])
+		);
+		ctx.searchDeadline = Math.max(ctx.searchDeadline || 0, ...contexts.map((context) => context.searchDeadline || 0));
+		return (await Promise.all(pending)).flat();
+	};
 
 	// 这里跟章节测试的连线题不一样，章节测试是新版连线题
 	/** 新建答题器 */
@@ -913,29 +963,7 @@ function workOrExam(
 		thread: thread ?? 1,
 		answerSeparators: answerSeparators.split(',').map((s) => s.trim()),
 		/** 默认搜题方法构造器 */
-		answerer: createCommonAnswerer({
-			// 每次搜题前确保字体解密完成（第一题乱码防护）
-			beforeSearch: () => ensureCxFontDecrypted(),
-			titleTransform: (elements, ctx) => {
-				if (elements.title) {
-					return workOrExamQuestionTitleTransform(elements.title);
-				}
-				return '';
-			},
-			optionsTransform: (elements, ctx) => {
-				const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown';
-				ctx.type = type as any;
-				if (type === 'completion') return '';
-				const optResults = (ctx.elements.options ?? []).filter(Boolean).map((o: any) => extractTextWithImages(o));
-				return {
-					text: optResults.map((r) => r.text).join('\n'),
-					images: optResults.flatMap((r) => r.images),
-					items: optResults
-				};
-			},
-			answererWrappers,
-			period
-		}),
+		answerer: answerQuestion,
 
 		work: async (ctx) => {
 			const { elements, searchInfos } = ctx;

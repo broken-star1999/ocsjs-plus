@@ -280,6 +280,17 @@ function answerRules(type: AIQuestionType, groupedOptions = false): string[] {
 
 export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 	if (!config.model.trim()) throw new Error('请先填写 AI 模型名称');
+	if (
+		[
+			question.title,
+			question.options || '',
+			question.suggestion_title || '',
+			question.suggestion_options || '',
+			...(question.option_items?.map((item) => item.text) || [])
+		].some((value) => value.includes('[公式无法识别]'))
+	) {
+		throw new Error('题目提取不完整：无法识别公式，本题未请求 AI。请检查页面公式或人工处理。');
+	}
 	const images = question.images || [];
 	const hasImages = images.length > 0;
 	if (images.some((image) => typeof image !== 'string' || !image.trim())) {

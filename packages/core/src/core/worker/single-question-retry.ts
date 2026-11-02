@@ -36,6 +36,7 @@ function contentSignature<E>(ctx: WorkContext<E>, includeText = true): string {
 				includeText ? textWithoutAnswer(element) : '',
 				element.tagName === 'IMG' ? element.getAttribute('src') : '',
 				...Array.from(element.querySelectorAll('img')).map((image) => image.getAttribute('src')),
+				...Array.from(element.querySelectorAll('svg, mjx-container, .MathJax')).map((formula) => formula.outerHTML),
 				element.tagName === 'INPUT' && (element as HTMLInputElement).type === 'hidden'
 					? (element as HTMLInputElement).value
 					: ''

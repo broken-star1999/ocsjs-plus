@@ -48,7 +48,12 @@ import {
 import { createAIConsensusSettingsButton } from '../utils/ai-consensus-settings';
 import { createAIWorkSummary, inspectAIWorkConfiguration } from '../utils/ai-work-status';
 import { isAIQuestionCacheSource } from '../utils/question-cache';
-import { readSearchSelection, expandSearchImages, SearchSelection } from '../utils/online-search-selection';
+import {
+	readSearchSelection,
+	readSearchQuestion,
+	expandSearchImages,
+	SearchSelection
+} from '../utils/online-search-selection';
 import {
 	createAnswererWrapperSection,
 	createSteps,
@@ -1867,6 +1872,18 @@ export const CommonProject = Project.create({
 					onlineSelectionListeners.forEach((listener) => listener());
 				});
 				document.addEventListener(
+					'click',
+					(event) => {
+						if (!this.cfg.selectSearch || !event.altKey || !(event.target instanceof Element)) return;
+						const selection = readSearchQuestion(event.target);
+						if (!selection) return;
+						event.preventDefault();
+						event.stopImmediatePropagation();
+						select(selection);
+					},
+					true
+				);
+				document.addEventListener(
 					'selectionchange',
 					debounce(() => {
 						if (this.cfg.selectSearch) {
@@ -2023,7 +2040,18 @@ export const CommonProject = Project.create({
 					button
 				]);
 
-				panel.body.append(h('div', [preview, content, searchContainer]));
+				panel.body.append(
+					h('div', [
+						h(
+							'div',
+							{ style: { marginBottom: '8px', color: '#64748b' } },
+							'公式拖选不到时：开启划词搜索，按住 Alt 点击题目，可收集整题；确认后点击搜索。'
+						),
+						preview,
+						content,
+						searchContainer
+					])
+				);
 				renderPreview();
 			}
 		}),
