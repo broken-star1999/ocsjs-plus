@@ -1,3 +1,5 @@
+import { prepareMathContent } from './mathjax-content';
+
 export interface SelectedSearchImage {
 	marker: string;
 	url: string;
@@ -14,9 +16,17 @@ export function readSearchSelection(selection: Selection | null): SearchSelectio
 	const images: SelectedSearchImage[] = [];
 	const parts: string[] = [];
 	for (let i = 0; i < selection.rangeCount; i++) {
-		const range = selection.getRangeAt(i);
+		const sourceRange = selection.getRangeAt(i);
+		const range = sourceRange.cloneRange ? sourceRange.cloneRange() : sourceRange;
 		// Never turn selections made inside the script's own shadow UI into a new question.
 		if (range.commonAncestorContainer.getRootNode().nodeType !== 9) continue;
+		// A selection beginning inside a glyph must include its complete expression.
+		const formulaAt = (node: Node) =>
+			(node.nodeType === 1 ? (node as Element) : node.parentElement)?.closest('mjx-container, .MathJax, svg');
+		const first = range.startContainer && formulaAt(range.startContainer);
+		const last = range.endContainer && formulaAt(range.endContainer);
+		if (first) range.setStartBefore(first.closest('mjx-container, .MathJax') || first);
+		if (last) range.setEndAfter(last.closest('mjx-container, .MathJax') || last);
 		const fragment = range.cloneContents();
 		const root = range.commonAncestorContainer;
 		const originalImages = [
@@ -24,6 +34,11 @@ export function readSearchSelection(selection: Selection | null): SearchSelectio
 			...Array.from((root as Element).querySelectorAll?.('img') || [])
 		].filter((img) => range.intersectsNode(img));
 		let imageIndex = 0;
+		for (const element of Array.from(fragment.querySelectorAll('img'))) {
+			const original = originalImages[imageIndex++];
+			if (original) element.setAttribute('src', original.currentSrc || original.src);
+		}
+		prepareMathContent(fragment);
 		const visit = (node: Node) => {
 			if (node.nodeType === 3) {
 				parts.push(node.textContent || '');
@@ -32,7 +47,7 @@ export function readSearchSelection(selection: Selection | null): SearchSelectio
 			const element = node as Element;
 			if (['SCRIPT', 'STYLE', 'NOSCRIPT'].includes(element.tagName)) return;
 			if (element.tagName === 'IMG') {
-				const img = originalImages[imageIndex++] || (element as HTMLImageElement);
+				const img = element as HTMLImageElement;
 				const raw = img.currentSrc || img.getAttribute('src') || img.getAttribute('data-src');
 				if (!raw) return;
 				let url: string;
@@ -65,6 +80,28 @@ export function readSearchSelection(selection: Selection | null): SearchSelectio
 		.replace(/\n{3,}/g, '\n\n')
 		.trim();
 	return text ? { text, images } : undefined;
+}
+
+/** Explicit whole-question capture avoids browser-dependent SVG drag selection. */
+export function readSearchQuestion(target: Element): SearchSelection | undefined {
+	const question = target.closest('.questionLi, .TiMu, .question-item');
+	if (!question) return;
+	const clone = question.cloneNode(true) as Element;
+	clone.querySelectorAll('.mark_answer, .analysis, .asFlagBtn, script, style').forEach((node) => node.remove());
+	return readSearchSelection({
+		isCollapsed: false,
+		rangeCount: 1,
+		getRangeAt: () => ({
+			commonAncestorContainer: question,
+			cloneContents: () => {
+				const fragment = question.ownerDocument.createDocumentFragment();
+				fragment.appendChild(clone);
+				return fragment;
+			},
+			intersectsNode: (node: Node) =>
+				question.contains(node) && !(node as Element).closest?.('.mark_answer, .analysis, .asFlagBtn')
+		})
+	} as unknown as Selection);
 }
 
 export function expandSearchImages(text: string, images: SelectedSearchImage[]): string {

@@ -290,7 +290,7 @@ async function main() {
 		assert.deepEqual(f.calls, [1, 1]);
 		f.cleanup();
 	});
-	for (const mutation of ['remove', 'replace', 'reorder', 'title', 'image', 'type', 'disabled'] as const) {
+	for (const mutation of ['remove', 'replace', 'reorder', 'title', 'image', 'formula', 'type', 'disabled'] as const) {
 		await test('stale/disabled question is rejected before querying: ' + mutation, async () => {
 			const f = await fixture();
 			const root = f.roots[0];
@@ -300,6 +300,10 @@ async function main() {
 			if (mutation === 'reorder') root.append(root.querySelector('.option')!.parentElement!);
 			if (mutation === 'title') root.querySelector('.title')!.append('新题');
 			if (mutation === 'image') root.querySelector('img')!.src = 'https://example.test/changed.png';
+			if (mutation === 'formula')
+				root
+					.querySelector('.title')!
+					.insertAdjacentHTML('beforeend', '<svg viewBox="0 0 10 10"><path d="M0 0H10V10Z"/></svg>');
 			if (mutation === 'type') (root.querySelector('input') as HTMLInputElement).value = '1';
 			if (mutation === 'disabled') root.setAttribute('aria-disabled', 'true');
 			await assert.rejects(f.results[0].retry!, /变化|离开|不可编辑/);
