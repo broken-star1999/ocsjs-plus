@@ -37,9 +37,9 @@ const infos = GM_info;
 	'use strict';
 
 	const projects = definedProjects();
-
 	// 运行脚本
 	start({
+		OCS_TYPE: 'common',
 		projects: projects,
 		renderConfig: {
 			renderScript: RenderScript,

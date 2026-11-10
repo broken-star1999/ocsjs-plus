@@ -152,3 +152,6 @@ tests/image/
 
 # husky 生成的钩子包装脚本（prepare 时自动重建）
 .husky/_
+
+# Plus 发布工作流的构建产物
+/release/
