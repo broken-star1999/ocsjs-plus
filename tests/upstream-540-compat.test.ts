@@ -15,6 +15,7 @@ import {
 } from '../packages/scripts/src/utils/work';
 import { extractYktAIContent } from '../packages/scripts/src/utils/ai-ykt-content';
 import { CommonProject } from '../packages/scripts/src/projects/common';
+import { OCSWorker } from '../packages/core/src/core/worker/worker';
 
 function declaration(path: string, name: string) {
 	const file = ts.createSourceFile(path, fs.readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
@@ -36,6 +37,7 @@ class CaptureWorker {
 	emit() {}
 }
 const noop = () => {};
+const displayedTitles: string[] = [];
 const deps = {
 	OCSWorker: CaptureWorker,
 	$,
@@ -49,20 +51,22 @@ const deps = {
 	$message: { info: noop, error: noop },
 	CommonProject: { scripts: { workResults: { methods: { init: noop, fillAll: noop, update: noop } } } },
 	BackgroundProject: { scripts: { dev: { cfg: { enable_answerer_debug: false } } } },
-	simplifyWorkResult: noop,
+	simplifyWorkResult: (value: any, transform: (titles: HTMLElement[]) => string) => {
+		const question = transform(value.ctx?.elements.title || []);
+		displayedTitles.push(question);
+		return { question };
+	},
 	resolveJudgement: () => assert.fail('native judgement must use native provenance'),
 	fillYktUEditor: noop,
 	Event: window.Event
 };
-const factory = new Function(
-	...Object.keys(deps),
-	ts.transpileModule(
-		['YKT_BLANK_INPUT_SELECTOR', 'cloneYktForTextExtract', 'extractYktTitleText', 'parseYktQuestionType', 'examination']
-			.map((name) => declaration(yktPath, name))
-			.join('\n') + '\nreturn examination;',
-		{ compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }
-	).outputText
-)(...Object.values(deps));
+const factorySource = ts.transpileModule(
+	['YKT_BLANK_INPUT_SELECTOR', 'cloneYktForTextExtract', 'extractYktTitleText', 'parseYktQuestionType', 'examination']
+		.map((name) => declaration(yktPath, name))
+		.join('\n') + '\nreturn examination;',
+	{ compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }
+).outputText;
+const factory = new Function(...Object.keys(deps), factorySource)(...Object.values(deps));
 const runtime = globalThis as any;
 const old = {
 	request: runtime.GM_xmlhttpRequest,
@@ -74,17 +78,26 @@ const old = {
 let payload: any;
 let answer = ['B'];
 let checks = 0;
+let holdResponse = false;
+let pendingReplies: (() => void)[] = [];
+let requestCount = 0;
 runtime.GM_xmlhttpRequest = (request: any) => {
+	requestCount++;
 	assert.equal(request.url, 'https://sync-540.invalid/v1/chat/completions');
 	const body = JSON.parse(request.data);
 	const content = body.messages[1].content;
 	payload = JSON.parse(typeof content === 'string' ? content : content[0].text);
-	request.onload({
-		status: 200,
-		responseText: JSON.stringify({
-			choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ answers: answer, uncertain: false }) } }]
-		})
-	});
+	const reply = () =>
+		request.onload({
+			status: 200,
+			responseText: JSON.stringify({
+				choices: [
+					{ finish_reason: 'stop', message: { content: JSON.stringify({ answers: answer, uncertain: false }) } }
+				]
+			})
+		});
+	if (holdResponse) pendingReplies.push(reply);
+	else reply();
 };
 $.sleep = async () => {};
 AnswerWrapperHandlerConfig.timeout_seconds = builtConfig.timeout_seconds = 0.2;
@@ -134,7 +147,7 @@ async function exam(type: string, options: string[], expected: string[], stem = 
 	ctx.searchInfos = await worker.opts.answerer(elements, ctx);
 	assert.equal(ctx.searchInfos[0].error, undefined);
 	const result = await worker.opts.work(ctx);
-	return { result, ctx, clicks, elements, payload };
+	return { result, ctx, clicks, elements, payload, worker };
 }
 async function navigation(mode: string, finalTab: boolean) {
 	const calls: string[] = [];
@@ -180,7 +193,136 @@ async function navigation(mode: string, finalTab: boolean) {
 	await context.run({ backToFirstWhenFinish: false });
 	return calls;
 }
+class LifecycleWorker extends OCSWorker<any> {
+	auditResults: any[] = [];
+	auditTask!: ReturnType<OCSWorker<any>['doWork']>;
+	doWork(options?: Parameters<OCSWorker<any>['doWork']>[0]) {
+		const update = this.opts.onResultsUpdate;
+		this.opts.onResultsUpdate = async (current, index, results) => {
+			this.auditResults = results;
+			await update?.(current, index, results);
+		};
+		return (this.auditTask = super.doWork(options));
+	}
+}
+const lifecycleFactory = new Function(...Object.keys(deps), factorySource)(
+	...Object.values({ ...deps, OCSWorker: LifecycleWorker })
+);
+async function until(predicate: () => unknown) {
+	const end = Date.now() + 2500;
+	while (!predicate()) {
+		if (Date.now() > end) throw new Error('Lifecycle fixture timed out');
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+function lifecycle(type = '单选题', wrappers: any[] = [wrapper]) {
+	const host = document.createElement('section');
+	host.className = 'exam-main--content';
+	host.innerHTML = `<section class="subject-item"><div class="item-type">${type}</div><div class="clearfix exam-font"><div class="custom_ueditor_cn_body">完整任务题干</div></div><ul class="list-unstyled"><li><div class="custom_ueditor_cn_body">B</div></li><li><div class="custom_ueditor_cn_body">正确选项</div></li></ul></section>`;
+	document.body.append(host);
+	const clicks: number[] = [];
+	host.querySelectorAll<HTMLElement>('li .custom_ueditor_cn_body').forEach(
+		(node, index) =>
+			(node.onclick = () => {
+				clicks.push(index);
+			})
+	);
+	answer = ['B'];
+	const worker: LifecycleWorker = lifecycleFactory({
+		answererWrappers: wrappers,
+		period: 0,
+		thread: 1,
+		answerSeparators: '#',
+		redundanceWordsText: ''
+	});
+	return {
+		worker,
+		clicks,
+		cleanup: () => {
+			worker.emit('close');
+			host.remove();
+			holdResponse = false;
+			pendingReplies = [];
+		}
+	};
+}
 async function main() {
+	await test('new YKT exam full worker fills the DOM-selected B and finishes its actual task', async () => {
+		const page = lifecycle();
+		try {
+			const results = await page.worker.auditTask;
+			assert.equal(results[0].result?.finish, true);
+			assert.deepEqual(page.clicks, [1]);
+		} finally {
+			page.cleanup();
+		}
+	});
+	await test('new YKT exam pauses a returned answer until continued', async () => {
+		holdResponse = true;
+		const page = lifecycle();
+		try {
+			await until(() => pendingReplies.length === 1);
+			page.worker.emit('stop');
+			pendingReplies.shift()!();
+			await until(() => page.worker.auditResults[0]?.requested);
+			assert.deepEqual(page.clicks, []);
+			page.worker.emit('continuate');
+			await page.worker.auditTask;
+			assert.deepEqual(page.clicks, [1]);
+		} finally {
+			page.cleanup();
+		}
+	});
+	await test('new YKT exam closing in-flight prevents late DOM writes', async () => {
+		holdResponse = true;
+		const page = lifecycle();
+		try {
+			await until(() => pendingReplies.length === 1);
+			page.worker.emit('close');
+			pendingReplies.shift()!();
+			await page.worker.auditTask;
+			assert.deepEqual(page.clicks, []);
+		} finally {
+			page.cleanup();
+		}
+	});
+	await test('new YKT exam manual ensemble waits for confirmation and never auto-clicks', async () => {
+		const page = lifecycle('单选题', [
+			{
+				...wrapper,
+				ai: undefined,
+				aiEnsemble: {
+					models: [wrapper.ai, { ...wrapper.ai, model: 'second-fixture' }],
+					rule: 'manual',
+					threshold: 100
+				}
+			}
+		]);
+		try {
+			await until(() => !!page.worker.auditResults[0]?.confirmReview);
+			assert.deepEqual(page.clicks, []);
+			assert.equal(page.worker.isRunning, true);
+			await page.worker.auditResults[0].confirmReview();
+			const results = await page.worker.auditTask;
+			assert.equal(results[0].result?.manual, true);
+			assert.deepEqual(page.clicks, []);
+		} finally {
+			page.cleanup();
+		}
+	});
+	await test('new YKT exam unknown page type never guesses a native choice', async () => {
+		const before = requestCount;
+		const page = lifecycle('未标注题型');
+		try {
+			const results = await page.worker.auditTask;
+			assert.equal(results[0].result?.finish, false);
+			assert.deepEqual(page.clicks, []);
+			assert.equal(requestCount, before + 1);
+			assert.equal(payload.type, 'unknown');
+		} finally {
+			page.cleanup();
+		}
+	});
 	await test('upstream MOOC configuration migration preserves new values and is idempotent', () => {
 		const path = 'packages/scripts/src/utils/config-migrate.ts';
 		const values = new Map<string, any>([
@@ -280,6 +422,11 @@ async function main() {
 		const value = await exam('单选题', ['一', '二'], ['A'], '<img class="kfformula" data-latex="x^2=1">');
 		assert.match(value.payload.question, /x\^2=1/);
 		assert.equal(value.result.finish, true);
+		displayedTitles.length = 0;
+		await value.worker.opts.onResultsInit(undefined, 0, [{ ctx: value.ctx }]);
+		await value.worker.opts.onResultsUpdate({ ctx: value.ctx }, 0, []);
+		assert.equal(displayedTitles.length, 2);
+		assert.ok(displayedTitles.every((title) => title.includes('x^2=1')));
 	});
 	await test('new YKT exam retains multiple images in the stem and the same option', async () => {
 		const png = (index: number) => {

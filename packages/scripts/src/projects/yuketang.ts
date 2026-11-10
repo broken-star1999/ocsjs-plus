@@ -1412,6 +1412,13 @@ function examination(opts: CommonWorkOptions) {
 					: ''
 			)
 			.join(',');
+	const titleForDisplay = (titles: (HTMLElement | undefined)[]) =>
+		opts.answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble)
+			? titles
+					.filter((node): node is HTMLElement => !!node)
+					.map((node) => extractYktAIContent(node).text)
+					.join('\n')
+			: titleTransform(titles);
 
 	const createAnswerer = (wrappers: CommonWorkOptions['answererWrappers'], forAI: boolean) =>
 		createCommonAnswerer({
@@ -1551,13 +1558,16 @@ function examination(opts: CommonWorkOptions) {
 		/** 元素准备完毕后回调（仅一次）：填充全部题目，面板立即显示全部题目 */
 		async onResultsInit(_curr, _index, res) {
 			await CommonProject.scripts.workResults.methods.fillAll(
-				res.map((r, i) => simplifyWorkResult(r, titleTransform, i))
+				res.map((r, i) => simplifyWorkResult(r, titleForDisplay, i))
 			);
 		},
 
 		/** 完成答题后 */
 		async onResultsUpdate(current, index, res) {
-			await CommonProject.scripts.workResults.methods.update(index, simplifyWorkResult(current, titleTransform, index));
+			await CommonProject.scripts.workResults.methods.update(
+				index,
+				simplifyWorkResult(current, titleForDisplay, index)
+			);
 		}
 	});
 
