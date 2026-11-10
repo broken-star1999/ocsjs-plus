@@ -47,6 +47,8 @@ export interface WorkContext<E> {
 	waitUntilActive?: () => Promise<void>;
 	/** Local, ordered progress sink. Never serialized with question/result data. */
 	onSearchProgress?: (infos: SearchInformation[]) => Promise<void>;
+	/** Local one-time trusted preparation gate used by single-question retry; never serialized. */
+	prepareForRetry?: (prepare: () => void | Promise<void>) => Promise<void>;
 }
 
 /** 答案题目处理器结果 */

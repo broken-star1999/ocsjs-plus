@@ -39,9 +39,11 @@ async function main() {
 	await test('fresh upload settings use 80 percent while existing explicit settings are preserved', () => {
 		const originalGet = $store.get;
 		const originalSet = $store.set;
+		const originalListen = $store.addChangeListener;
 		const stored = new Map<string, unknown>();
 		$store.get = ((key: string, fallback: unknown) => (stored.has(key) ? stored.get(key) : fallback)) as any;
 		$store.set = ((key: string, value: unknown) => stored.set(key, value)) as any;
+		$store.addChangeListener = (() => 0) as any;
 		try {
 			const initialize = () =>
 				$.createConfigProxy({
@@ -57,6 +59,51 @@ async function main() {
 		} finally {
 			$store.get = originalGet;
 			$store.set = originalSet;
+			$store.addChangeListener = originalListen;
+		}
+	});
+	await test('configuration storage echoes and remote changes do not trigger writeback loops', async () => {
+		const originalGet = $store.get;
+		const originalSet = $store.set;
+		const originalListen = $store.addChangeListener;
+		const stored = new Map<string, unknown>();
+		const listeners = new Map<string, (value: unknown, previous: unknown, remote: boolean) => void>();
+		const writes: unknown[] = [];
+		const key = 'test.upstream-proxy.upload';
+		$store.get = ((name: string, fallback: unknown) => (stored.has(name) ? stored.get(name) : fallback)) as any;
+		$store.set = ((name: string, value: unknown) => {
+			const previous = stored.get(name);
+			stored.set(name, value);
+			if (name === key) writes.push(value);
+			listeners.get(name)?.(value, previous, false);
+		}) as any;
+		$store.addChangeListener = ((
+			name: string,
+			callback: (value: unknown, previous: unknown, remote: boolean) => void
+		) => {
+			listeners.set(name, callback);
+			return listeners.size;
+		}) as any;
+		try {
+			const script: any = {
+				namespace: 'test.upstream-proxy',
+				configs: { upload: CommonProject.scripts.settings.configs.upload },
+				cfg: {}
+			};
+			script.cfg = $.createConfigProxy(script);
+			script.cfg.upload = 'save';
+			script.cfg.upload = 100;
+			await delay(20);
+			assert.deepEqual(writes, [100], 'same-cycle writes are persisted once without echo recursion');
+			stored.set(key, 'nomove');
+			listeners.get(key)!('nomove', 100, true);
+			assert.equal(script.cfg.upload, 'nomove', 'remote storage changes refresh the live configuration');
+			await delay(20);
+			assert.deepEqual(writes, [100], 'remote changes must not be written back repeatedly');
+		} finally {
+			$store.get = originalGet;
+			$store.set = originalSet;
+			$store.addChangeListener = originalListen;
 		}
 	});
 	await test('default upload policy submits at 80 percent of successful fills after answering finishes', () => {
@@ -134,9 +181,10 @@ async function main() {
 			assert.equal(isAIQuestionCacheSource(info), true);
 			CommonProject.scripts.settings.cfg.aiEnabled = false;
 			CommonProject.scripts.settings.cfg.enableQuestionCaches = true;
-			BackgroundProject.scripts.data.cfg.localQuestionCaches = [];
+			const title = 'upstream-sync-cache-provenance: ' + name;
+			const readCached = () => BackgroundProject.scripts.data.methods.searchAnswerInCaches(title, () => []);
 			const result: any = {
-				question: 'question',
+				question: title,
 				type: 'single',
 				finish: true,
 				requested: true,
@@ -152,25 +200,26 @@ async function main() {
 			}) as any;
 			try {
 				await CommonProject.scripts.workResults.methods.update(0, result);
-				assert.equal(BackgroundProject.scripts.data.cfg.localQuestionCaches.length, 0);
-				BackgroundProject.scripts.data.methods.addQuestionCacheFromWorkResult([result]);
-				assert.equal(BackgroundProject.scripts.data.cfg.localQuestionCaches.length, 0);
+				assert.deepEqual(await readCached(), []);
+				await BackgroundProject.scripts.data.methods.addQuestionCacheFromWorkResult([result]);
+				assert.deepEqual(await readCached(), []);
 			} finally {
 				$store.getTab = originalGet;
 				$store.setTab = originalSet;
 			}
 		});
 	}
-	await test('ordinary answers still enter the legacy cache and mixed results exclude only AI sources', () => {
+	await test('ordinary answers still enter the memory cache and mixed results exclude only AI sources', async () => {
 		const legacy: any = { name: 'ordinary', results: [['question', 'text answer', {}]] };
 		const ai: any = { name: 'AI', results: [['question', 'B', { ai_native: true }]] };
 		assert.equal(isAIQuestionCacheSource(legacy), false);
-		BackgroundProject.scripts.data.cfg.localQuestionCaches = [];
-		BackgroundProject.scripts.data.methods.addQuestionCacheFromWorkResult([
-			{ question: 'question', searchInfos: [legacy, ai] } as any
+		const title = 'upstream-sync-ordinary-cache';
+		await BackgroundProject.scripts.data.methods.addQuestionCacheFromWorkResult([
+			{ question: title, searchInfos: [legacy, ai] } as any
 		]);
+		const cached = await BackgroundProject.scripts.data.methods.searchAnswerInCaches(title, () => []);
 		assert.deepEqual(
-			BackgroundProject.scripts.data.cfg.localQuestionCaches.map((item) => item.answer),
+			cached.flatMap((info) => info.results.map((item) => item.answer)),
 			['text answer']
 		);
 	});

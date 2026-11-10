@@ -307,7 +307,7 @@ async function main() {
 		assert.match(info.error || '', /Key|密钥/);
 		assert.equal(requests.length, 0, 'valid participants must not start before the full auth check completes');
 	});
-	await test('a required summary missing its key is rejected before any participant or quiz starts', async () => {
+	await test('a summary missing its key warns without blocking unrelated quiz routes', async () => {
 		const member = source('member');
 		const summary = source('summary');
 		key(member);
@@ -322,9 +322,11 @@ async function main() {
 				summarySelection: aiModelKey(summary.id, 'fixture')
 			}
 		);
-		assert.equal(inspectAIWorkConfiguration({ answererWrappers: wrappers }).ready, false);
+		const readiness = inspectAIWorkConfiguration({ answererWrappers: wrappers });
+		assert.equal(readiness.ready, true);
+		assert.match(readiness.warnings.join('\n'), /客观题.*总结模型.*Key/);
 		const run = await studyFixture({ aiEnabled: true, answererWrappers: wrappers });
-		assert.deepEqual([run.chapters, run.videos, run.submits, requests.length], [0, 1, 0, 0]);
+		assert.deepEqual([run.chapters, run.videos, run.submits, requests.length], [1, 1, 0, 0]);
 	});
 	await test('direct ensemble search checks an active summary key before spending participant requests', async () => {
 		const member = source('member');
@@ -346,6 +348,43 @@ async function main() {
 		assert.match(info.error || '', /Key|密钥/);
 		assert.equal(requests.length, 0);
 	});
+	for (const rule of ['summary', 'confidence-then-summary', 'summary-then-confidence'] as const)
+		for (const subjectiveRule of ['selected', 'manual'] as const)
+			await test(`${rule} missing its summary key keeps subjective ${subjectiveRule} runnable`, async () => {
+				const member = source('member', 'none');
+				const summary = source('summary');
+				const memberKey = aiModelKey(member.id, 'fixture');
+				const wrappers = createAIAnswererWrappers(state(member, summary), true, [{ key: memberKey, threads: 2 }], {
+					rule,
+					confidenceEnabled: true,
+					summaryEnabled: true,
+					summarySelection: aiModelKey(summary.id, 'fixture'),
+					subjectiveRule,
+					subjectiveSelection: memberKey
+				});
+				const readiness = inspectAIWorkConfiguration({ answererWrappers: wrappers });
+				assert.equal(readiness.ready, true);
+				assert.equal(readiness.error, '');
+				assert.match(readiness.warnings.join('\n'), /客观题.*总结模型.*Key/);
+				assert.ok(readiness.warnings.every((warning) => !warning.startsWith('主观题：')));
+				const answer = await searchAIEnsemble(
+					wrappers[0].aiEnsemble!,
+					{ title: '请填写一个大写字母', type: 'completion', blank_count: 1 },
+					1000
+				);
+				if (subjectiveRule === 'selected') assert.equal(answer.error, undefined);
+				else assert.match(answer.error || '', /人工判断/);
+				assert.equal(answer.ensemble?.status, subjectiveRule === 'selected' ? 'selected' : 'review');
+				assert.equal(requests.length, 2);
+				assert.ok(requests.every((request) => request.headers.Authorization === undefined));
+				if (subjectiveRule === 'selected') assert.equal(answer.results[0]?.answer, 'A');
+				else assert.equal(answer.results.length, 0);
+				requests = [];
+				const objective = await searchAIEnsemble(wrappers[0].aiEnsemble!, question, 1000);
+				assert.match(objective.error || '', /Key|密钥/);
+				assert.equal(objective.results.length, 0);
+				assert.equal(requests.length, 0, 'the affected objective route must not spend participant requests');
+			});
 	await test('an enabled but unused summary without a key does not block independent participants', () => {
 		const member = source('member');
 		const summary = source('summary');
@@ -406,7 +445,7 @@ async function main() {
 			assert.equal(requests.length, 2, 'an invalid subjective summary cannot start paid requests');
 		});
 	}
-	await test('a default objective summary rule keeps its required key as a global dependency', async () => {
+	await test('a default objective summary rule validates its key on the affected question route', async () => {
 		const member = source('member', 'none');
 		const summary = source('summary');
 		const wrappers = createAIAnswererWrappers(
@@ -424,8 +463,9 @@ async function main() {
 		// Direct wrapper callers may omit a rule; core then defaults to confidence-then-summary.
 		delete wrappers[0].aiEnsemble!.rule;
 		const readiness = inspectAIWorkConfiguration({ answererWrappers: wrappers });
-		assert.equal(readiness.ready, false);
-		assert.match(readiness.error, /总结模型.*Key/);
+		assert.equal(readiness.ready, true);
+		assert.match(readiness.warnings.join('\n'), /客观题.*总结模型.*Key/);
+		assert.match(readiness.warnings.join('\n'), /主观题.*总结模型.*Key/);
 		assert.equal(requests.length, 0);
 		const objective = await searchAIEnsemble(wrappers[0].aiEnsemble!, question, 1000);
 		assert.equal(objective.results.length, 0);

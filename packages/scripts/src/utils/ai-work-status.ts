@@ -52,10 +52,10 @@ export function inspectAIWorkConfiguration(options: AIWorkStatusOptions) {
 			const configurationError = getAIConfigurationError(config.summary);
 			if (configurationError) {
 				const summaryError = `总结模型 ${config.summary.label || config.summary.model}：${configurationError}`;
-				// An objective rule that never uses this model must remain runnable.
-				// The subjective route validates its summary again before any requests.
-				if (objectiveUsesSummary) error ||= summaryError;
-				else warnings.push('主观题：' + summaryError);
+				// A summary belongs to its decision rules, not to every question in the task.
+				// The ensemble validates the active question's dependencies before requests.
+				if (objectiveUsesSummary) warnings.push('客观题：' + summaryError);
+				if (config.subjectiveRule === 'summary') warnings.push('主观题：' + summaryError);
 			}
 		}
 	}

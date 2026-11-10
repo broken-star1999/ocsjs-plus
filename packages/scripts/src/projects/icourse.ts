@@ -14,6 +14,8 @@ import { $console, BackgroundProject } from './background';
 import { $playwright } from '../utils/app';
 import { waitForElement, waitForMedia, waitFor } from '../utils/study';
 import { playbackRate, volume } from '../utils/configs';
+import { readSpeed, discussionStrategy, enableChapterTest, icourseStudyCenterConfigs } from '../utils/icourse.configs';
+import { migrateIcourseStudyConfigs, icourseStudyNamespace } from '../utils/config-migrate';
 import { $render } from '../utils/render';
 
 const $msg_and_log = (type: 'info' | 'warn' | 'error', msg: string) => {
@@ -52,6 +54,12 @@ export const ICourseProject = Project.create({
 					for (const key in ICourseProject.scripts) {
 						if (Object.prototype.hasOwnProperty.call(ICourseProject.scripts, key)) {
 							const script = (ICourseProject.scripts as any)[key] as Script;
+							// 仅调度实现了 main 方法的脚本：
+							// study-center 与 study 共用命名空间，cfg.runAtHash 可能读到 study 已存储的值，
+							// 若不校验 main 会导致调度器匹配到设置中心后中断，真正的学习脚本无法运行
+							if (typeof script.methods?.main !== 'function') {
+								continue;
+							}
 							const runAtHash = Array.isArray(script.cfg.runAtHash) ? script.cfg.runAtHash : [script.cfg.runAtHash];
 							if (runAtHash.length && runAtHash.some((h) => state.currentUrlHash.includes(h))) {
 								if (state.currentRunningScriptName !== script.name) {
@@ -94,53 +102,50 @@ export const ICourseProject = Project.create({
 				};
 			}
 		}),
+		/**
+		 * 中国大学MOOC学习设置中心。
+		 *
+		 * 作为旧版学习脚本与新版智慧慕课的唯一可见入口，集中展示统一的使用提示与学习配置。
+		 * 实际的学习逻辑仍由下方被 hideInPanel 的两个学习脚本处理。
+		 */
+		'study-center': new Script({
+			name: '🖥️ 学习设置',
+			matches: [
+				['MOOC学习页面', 'icourse163.org/learn'],
+				['SPOC学习页面', 'icourse163.org/spoc/learn'],
+				['新智慧慕课学习页面', '/mooc/learn']
+			],
+			namespace: icourseStudyNamespace,
+			configs: icourseStudyCenterConfigs,
+			oncomplete() {
+				// 迁移旧命名空间配置
+				migrateIcourseStudyConfigs();
+				// 置顶设置中心，作为用户主要交互入口
+				BackgroundProject.scripts.render.methods.pin(this);
+			}
+		}),
 		study: new Script({
 			name: '🖥️ 学习脚本',
+			hideInPanel: true,
 			// 添加版本号是因为只有 notes 会强制更新，其他配置项不会，如果需要修改 runAtHash ，需要更新版本号
-			namespace: 'icourse.study-v1',
+			namespace: icourseStudyNamespace,
 			matches: [
 				['MOOC作业页面', 'icourse163.org/learn'],
 				['SPOC作业页面', 'icourse163.org/spoc/learn']
 			],
 			configs: {
-				notes: {
-					defaultValue: $ui.notes([
-						'请勿在使用过程中最小化浏览器',
-						'自动讨论默认关闭，如需开启请在下方设置中设置',
-						'作业请完成课程后手动进入'
-					]).outerHTML
-				},
 				runAtHash: {
 					defaultValue: '/learn/content?type=detail'
 				},
 				playbackRate: playbackRate,
 				volume: volume,
-				readSpeed: {
-					label: 'PPT翻阅速度（秒）',
-					attrs: { type: 'number', step: '1', min: '1', max: '10' },
-					defaultValue: 1
-				},
-				discussionStrategy: {
-					label: '讨论自动回复方式',
-					tag: 'select',
-					defaultValue: 'not-reply' as 'not-reply' | 'max-show-up' | 'max-fav' | 'use-newest',
-					options: [
-						['not-reply', '不讨论回复'],
-						['max-show-up', '获取出现最多的评论进行回复'],
-						['max-fav', '获取最多点赞的评论进行回复'],
-						['use-newest', '获取最新的评论进行回复']
-					]
-				},
-				enableChapterTest: {
-					label: '随堂测验自动答题',
-					attrs: {
-						type: 'checkbox',
-						title: '是否开启随堂测验自动答题，默认关闭，测试时只需点击即可完成测验，但这里保留选项防止需要开启。'
-					},
-					defaultValue: false
-				}
+				readSpeed,
+				discussionStrategy,
+				enableChapterTest
 			},
 			oncomplete() {
+				// 迁移旧命名空间下的用户配置到统一的 icourse.study 命名空间（幂等，可安全重复调用）
+				migrateIcourseStudyConfigs();
 				this.onConfigChange('playbackRate', (playbackRate) => {
 					state.currentMedia && (state.currentMedia.playbackRate = parseFloat(playbackRate.toString()));
 				});
@@ -357,50 +362,29 @@ export const ICourseProject = Project.create({
 		}),
 		study_v2: new Script({
 			name: '🖥️ 智慧慕课',
+			hideInPanel: true,
 			matches: [['新智慧慕课', '/mooc/learn']],
-			namespace: 'icourse.study-v2',
+			namespace: icourseStudyNamespace,
 			configs: {
-				notes: {
-					defaultValue: $ui.notes([
-						'请勿在使用过程中最小化浏览器',
-						'自动讨论默认关闭，如需开启请在下方设置中设置',
-						'作业请完成课程后手动进入'
-					]).outerHTML
-				},
 				playbackRate: playbackRate,
 				volume: volume,
-				readSpeed: {
-					label: 'PPT翻阅速度（秒）',
-					attrs: { type: 'number', step: '1', min: '1', max: '10' },
-					defaultValue: 1
-				},
-				discussionStrategy: {
-					label: '讨论自动回复方式',
-					tag: 'select',
-					defaultValue: 'random' as 'not-reply' | 'random' | 'max-show-up' | 'max-fav' | 'use-newest',
-					options: [
-						['not-reply', '不讨论回复'],
-						['random', '随机抽取评论区的内容进行回复'],
-						['max-show-up', '获取出现最多的评论进行回复'],
-						['max-fav', '获取最多点赞的评论进行回复'],
-						['use-newest', '获取最新的评论进行回复']
-					]
-				},
-				enableChapterTest: {
-					label: '随堂测验自动答题',
-					attrs: {
-						type: 'checkbox',
-						title: '是否开启随堂测验自动答题，默认关闭，测试时只需点击即可完成测验，但这里保留选项防止需要开启。'
-					},
-					defaultValue: false
-				}
+				readSpeed,
+				discussionStrategy,
+				enableChapterTest
 			},
 			methods() {
 				return {
+					waitForV2PageLoaded: () => waitForElement('[data-page-state="loaded"]'),
 					main: async () => {
+						this.onConfigChange('playbackRate', (playbackRate) => {
+							state.currentMedia && (state.currentMedia.playbackRate = parseFloat(playbackRate.toString()));
+						});
+						this.onConfigChange('volume', (v) => state.currentMedia && (state.currentMedia.volume = v));
+
 						// 加载后将 section 元素作为界面标记，如果用户此时切换小节，可以使用 section 元素是否存在进行判断能否运行，如果不存在则停止运行防止多个 onhistorychange 并行代码冲突
-						const section = await waitForElement('section[data-page-state="loaded"]');
+						const section = await waitForElement('.learn-courseware-panel');
 						const canRun = () => section?.isConnected;
+						$message.info('正在自动学习中...');
 
 						const remotePage = await BackgroundProject.scripts.dev.methods.getRemotePlaywrightCurrentPage();
 						// 检查是否为软件环境
@@ -546,14 +530,14 @@ export const ICourseProject = Project.create({
 
 							await remotePage?.click(getCurrentLesson());
 							// 判断章节
-							let nextLesson =
+							const nextLesson =
 								getCurrentLesson().nextElementSibling?.querySelector('button.text-primary-700')?.nextElementSibling;
 
 							if (nextLesson) {
 								return [() => nextLesson];
 							}
 							await remotePage?.click(getCurrentChapter());
-							let nextChapter =
+							const nextChapter =
 								getCurrentChapter().nextElementSibling?.querySelector('button.text-primary-700')?.nextElementSibling;
 
 							if (nextChapter) {
@@ -575,18 +559,29 @@ export const ICourseProject = Project.create({
 				};
 			},
 			async onhistorychange(type) {
+				// 等待界面加载
+				await this.methods.waitForV2PageLoaded();
 				if (type === 'push') {
-					this.methods.main();
+					if (document.querySelector('[class="course-content-card"]')) {
+						return $message.info({ content: '请手动进入视频、作业页面，脚本会自动运行。', duration: 10 });
+					}
+					if (document.querySelector('.learn-courseware-panel')) {
+						return this.methods.main();
+					}
 				}
 			},
 			async oncomplete() {
-				await $.sleep(1000);
+				// 迁移旧命名空间下的用户配置到统一的 icourse.study 命名空间（幂等，可安全重复调用）
+				migrateIcourseStudyConfigs();
+				// 等待界面加载
+				await this.methods.waitForV2PageLoaded();
 				// 课件首页
 				if (document.querySelector('[class="course-content-card"]')) {
-					$message.info({ content: '请手动进入视频、作业页面，脚本会自动运行。', duration: 10 });
-					return;
-				} else {
-					this.methods.main();
+					return $message.info({ content: '请手动进入视频、作业页面，脚本会自动运行。', duration: 10 });
+				}
+
+				if (document.querySelector('.learn-courseware-panel')) {
+					return this.methods.main();
 				}
 			}
 		}),
@@ -1124,6 +1119,13 @@ async function discussion(
 			$msg_and_log('error', '读取最多点赞评论失败！');
 		}
 		res = content;
+	} else if (discussionStrategy === 'random') {
+		const list = Array.from(document.querySelectorAll('.j-reply-all .f-pr .j-content'));
+		const content = list[Math.floor(Math.random() * list.length)]?.textContent || '';
+		if (!content) {
+			$msg_and_log('error', '读取随机评论失败！');
+		}
+		res = content;
 	} else if (discussionStrategy === 'use-newest') {
 		const content = document.querySelector('.j-reply-all .f-pr .first .j-content')?.textContent || '';
 		if (!content) {
@@ -1223,10 +1225,11 @@ async function discussion_v2(
 async function networkIdleRequire(rp: RemotePage, cb: () => void | Promise<void>) {
 	await cb();
 	// ux-modal  ux-modal-fadeIn
+	// 探测式等待：弹窗不出现是正常情况，waitFor 超时现在会抛异常，这里吞掉并视为无弹窗
 	const modal = await waitFor(() => document.querySelector('.ux-modal_content_content'), {
 		check_period_ms: 200,
 		timeout_seconds: 1
-	});
+	}).catch(() => undefined);
 	if (modal) {
 		const msg = $message.warn('答题速度过快导致并发限制、3秒后再继续答题。');
 		await rp.click('.ux-modal-btn');

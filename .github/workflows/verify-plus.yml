@@ -2,9 +2,9 @@ name: Verify OCS Plus
 
 on:
   push:
-    branches: ['feat/ai-answerer', 'codex/**']
+    branches: ['feat/ai-answerer', 'beta', 'codex/**']
   pull_request:
-    branches: ['5.0', 'feat/ai-answerer']
+    branches: ['5.0', 'feat/ai-answerer', 'beta']
   workflow_dispatch:
 
 permissions:

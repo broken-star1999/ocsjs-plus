@@ -48,7 +48,12 @@ import {
 import { createAIConsensusSettingsButton } from '../utils/ai-consensus-settings';
 import { createAIWorkSummary, inspectAIWorkConfiguration } from '../utils/ai-work-status';
 import { isAIQuestionCacheSource } from '../utils/question-cache';
-import { readSearchSelection, expandSearchImages, SearchSelection } from '../utils/online-search-selection';
+import {
+	readSearchSelection,
+	readSearchQuestion,
+	expandSearchImages,
+	SearchSelection
+} from '../utils/online-search-selection';
 import {
 	createAnswererWrapperSection,
 	createSteps,
@@ -200,6 +205,12 @@ const state = {
 			},
 			'zhs-hike': (index: number) => {
 				document.querySelectorAll<HTMLElement>('.q_main_right .card_ul .card_li').item(index)?.click();
+			},
+			'zhs-hike-answer-training': (index: number) => {
+				document
+					.querySelectorAll<HTMLElement>('.base-question-component')
+					.item(index)
+					?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 			},
 			icve: (index: number) => {
 				document.querySelectorAll<HTMLElement>(`.sheet_nums [id*="sheetSeq"]`).item(index)?.click();
@@ -445,6 +456,9 @@ export const CommonProject = Project.create({
 						);
 					}
 				},
+				OCS_TYPE: {
+					defaultValue: '' as 'dev' | 'common' | 'main' | ''
+				},
 				answererWrappers: {
 					separator: '自动答题设置',
 					defaultValue: [] as AnswererWrapper[]
@@ -476,6 +490,7 @@ export const CommonProject = Project.create({
 						return getAnswererConfigProvider() ? createAnswererModeDropdown() : '';
 					},
 					onload() {
+						const OCS_TYPE = CommonProject.scripts.settings.cfg.OCS_TYPE;
 						const aws: any[] = CommonProject.scripts.settings.cfg.answererWrappers || [];
 						this.value = aws.length ? aws.length + ' 个可用题库（点击进入配置）' : '点击进入配置';
 
@@ -776,14 +791,18 @@ export const CommonProject = Project.create({
 										]
 									)
 								],
-								[
-									h(
-										'div',
-										{ className: 'secondary' },
-										'⚠️ 如果想添加多个不同的题库配置，请在每个配置之间使用三个井号隔开: ###。'
-									)
-								],
-								[h('div', { className: 'secondary' }, '⚠️ 配置第三方题库出现网页弹窗的，点击永久允许连接。')]
+								...(OCS_TYPE === 'common'
+									? [
+											[
+												h(
+													'div',
+													{ className: 'secondary' },
+													'⚠️ 如果想添加多个不同的题库配置，请在每个配置之间使用三个井号隔开: ###。'
+												)
+											],
+											[h('div', { className: 'secondary' }, '⚠️ 配置第三方题库出现网页弹窗的，点击永久允许连接。')]
+									  ]
+									: [])
 							]);
 
 							/** 清空题库配置（确认后清空并关闭弹窗），一键获取/手动配置弹窗共用 */
@@ -1358,7 +1377,8 @@ export const CommonProject = Project.create({
 				);
 			},
 			// 实时更新内部设置
-			oncomplete() {
+			oncomplete({ OCS_TYPE }) {
+				this.cfg.OCS_TYPE = OCS_TYPE;
 				// The shared tab ID exists only after start(); register cross-frame events after that.
 				const report = cors.defineTopFunction((record: AICallRecord) => updateAICallRecord(record));
 				if (self !== top) {
@@ -1867,6 +1887,18 @@ export const CommonProject = Project.create({
 					onlineSelectionListeners.forEach((listener) => listener());
 				});
 				document.addEventListener(
+					'click',
+					(event) => {
+						if (!this.cfg.selectSearch || !event.altKey || !(event.target instanceof Element)) return;
+						const selection = readSearchQuestion(event.target);
+						if (!selection) return;
+						event.preventDefault();
+						event.stopImmediatePropagation();
+						select(selection);
+					},
+					true
+				);
+				document.addEventListener(
 					'selectionchange',
 					debounce(() => {
 						if (this.cfg.selectSearch) {
@@ -2023,7 +2055,18 @@ export const CommonProject = Project.create({
 					button
 				]);
 
-				panel.body.append(h('div', [preview, content, searchContainer]));
+				panel.body.append(
+					h('div', [
+						h(
+							'div',
+							{ style: { marginBottom: '8px', color: '#64748b' } },
+							'公式拖选不到时：开启划词搜索，按住 Alt 点击题目，可收集整题；确认后点击搜索。'
+						),
+						preview,
+						content,
+						searchContainer
+					])
+				);
 				renderPreview();
 			}
 		}),

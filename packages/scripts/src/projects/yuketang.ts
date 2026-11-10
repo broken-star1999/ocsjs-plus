@@ -4,22 +4,26 @@ import {
 	StringUtils,
 	createDefaultQuestionResolver,
 	defaultWorkTypeResolver,
-	WorkResult
+	WorkResult,
+	resolveJudgement,
+	QuestionTypes
 } from '@ocsjs/core';
-import { $msg, playMedia, CommonWorkOptions } from '../utils';
+import { $msgwc, playMedia, CommonWorkOptions } from '../utils';
 import { createSteps } from '../utils/ui';
-import { restudy, volume } from '../utils/configs';
+import { restudy, volume, workNotes } from '../utils/configs';
 import { waitForElement } from '../utils/study';
 import { CommonProject } from './common';
 import { $console, BackgroundProject } from './background';
 import { FontDecryptor, findFontUrls, listFontFaces, watchElements } from '../utils/font-decrypt';
 import type { WatchController } from '../utils/font-decrypt';
+import { extractYktAIContent } from '../utils/ai-ykt-content';
 import {
 	commonWork,
 	createCommonAnswerer,
 	dynamicWorkTips,
 	extractTextWithImages,
 	removeRedundantWords,
+	simplifyWorkResult,
 	updateDynamicResult
 } from '../utils/work';
 
@@ -42,7 +46,12 @@ const state = {
 
 export const YKTProject = Project.create({
 	name: '雨课堂',
-	domains: ['yuketang.cn', 'gdufemooc.cn'],
+	domains: [
+		'yuketang.cn',
+		// 雨课堂考试域名
+		'xuetangx.com',
+		'gdufemooc.cn'
+	],
 	scripts: {
 		guide: new Script({
 			name: '💡 使用提示',
@@ -237,7 +246,7 @@ export const YKTProject = Project.create({
 				const study = async () => {
 					try {
 						if ($el('.detail-container video')) {
-							$msg.info('即将开始视频学习：' + getJobName());
+							$msgwc.info('即将开始视频学习：' + getJobName());
 
 							// AI数字人视频 （自动阅读）
 							if (document.querySelector('.digital-human-video-element-selector')) {
@@ -257,10 +266,10 @@ export const YKTProject = Project.create({
 
 						const forum = $el('.detail-container .lms-graph-forum');
 						if (forum) {
-							$msg.info('即将开始自动讨论：' + getJobName());
+							$msgwc.info('即将开始自动讨论：' + getJobName());
 							// 评论模式复用「课程学习」脚本的 discussMode 设置
 							await autoCommentYktForum(forum, this.cfg.discussMode);
-							$msg.success('自动讨论完成');
+							$msgwc.success('自动讨论完成');
 							await $.sleep(3000);
 						}
 
@@ -277,12 +286,12 @@ export const YKTProject = Project.create({
 									$console.warn('作业 iframe 无法访问（可能跨域），跳过自动答题。');
 								} else {
 									$message.info('检测到作业任务点，等待作业页面加载...');
-									// 等 iframe 内题目区域渲染（waitForElement 超时单位：秒，超时时 resolve undefined）
+									// 等 iframe 内题目区域渲染；waitFor 超时现在会抛异常，这里吞掉并视为加载失败，跳过自动答题
 									const questionRoot = await waitForElement(
 										() =>
 											exerciseIframe.contentDocument?.querySelector<HTMLElement>('.container-problem .subject-item'),
 										{ timeout_seconds: 20, check_period_ms: 200 }
-									);
+									).catch(() => undefined);
 									if (!questionRoot) {
 										$console.warn('作业页面加载超时，跳过自动答题。');
 									} else {
@@ -321,6 +330,26 @@ export const YKTProject = Project.create({
 				};
 				study();
 			}
+		}),
+		exam: new Script({
+			name: '自动考试',
+			matches: [['考试界面', 'examination.xuetangx.com/exam/']],
+			namespace: 'yuketang.study.exam',
+			configs: {
+				notes: workNotes
+			},
+			async onhistorychanged(type, ...args) {
+				if (type !== 'pushed') return;
+
+				await waitForElement('.exam-main--content .subject-item');
+				commonWork({
+					mount_script: this,
+					workerProvider: (opts) => examination(opts)
+				});
+			},
+			async oncomplete() {
+				this.onhistorychanged?.('pushed');
+			}
 		})
 	}
 });
@@ -347,14 +376,11 @@ async function autoCommentYktForum(forum: HTMLElement, discussMode: 'random' | '
 		return;
 	}
 
-	// 等待输入框渲染（waitForElement 超时 resolve undefined）
+	// 等待输入框渲染（waitFor 超时抛出异常，信息由 timeout_message 指定）
 	const textarea = (await waitForElement(
 		() => forum.querySelector<HTMLTextAreaElement>('.forum-publish textarea.el-textarea__inner'),
-		{ timeout_seconds: 20, check_period_ms: 500 }
-	)) as HTMLTextAreaElement | undefined;
-	if (!textarea) {
-		throw new Error('讨论区输入框加载超时。');
-	}
+		{ timeout_seconds: 20, check_period_ms: 500, timeout_message: '讨论区输入框加载超时。' }
+	)) as HTMLTextAreaElement;
 
 	const discusses = Array.from(forum.querySelectorAll('.forum-content .forum-item .comment-text'))
 		.map((el) => (el.textContent || '').trim())
@@ -370,13 +396,12 @@ async function autoCommentYktForum(forum: HTMLElement, discussMode: 'random' | '
 	textarea.dispatchEvent(new Event('input', { bubbles: true }));
 
 	// 填充后等待发送按钮解除禁用（.disabled 状态下点击无效）
-	const send_btn = await waitForElement(() => forum.querySelector<HTMLElement>('.prompt-send-btn:not(.disabled)'), {
+	// waitFor resolve 时已保证元素存在（超时走 reject），此处断言为非空
+	const send_btn = (await waitForElement(() => forum.querySelector<HTMLElement>('.prompt-send-btn:not(.disabled)'), {
 		timeout_seconds: 10,
-		check_period_ms: 500
-	});
-	if (!send_btn) {
-		throw new Error('讨论区发送按钮未解除禁用，评论提交失败。');
-	}
+		check_period_ms: 500,
+		timeout_message: '讨论区发送按钮未解除禁用，评论提交失败。'
+	})) as HTMLElement;
 	send_btn.click();
 	await $.sleep(1000);
 }
@@ -420,11 +445,21 @@ async function setupYuketangFontDecrypt(doc: Document = document) {
 	// 注意：不能用 waitForElement——它写死全局 document，而加密文字可能在
 	// iframe 的 document 里（会白等整个超时）。这里按 doc 短轮询，即时命中。
 	const waitStart = Date.now();
+	// 正文已渲染且连续多次轮询均无密文：本题无加密文字（如纯公式题），提前放行，
+	// 迟到的密文仍由下方 watchElements 监听器兜底解密
+	let noCipherStable = 0;
 	while (!doc.querySelector(YKT_ENCRYPTED_SELECTOR) && Date.now() - waitStart < 3000) {
+		const bodyRendered = !!doc.querySelector('.container-problem .problem-body, .exam-body, .subject-item');
+		noCipherStable = bodyRendered ? noCipherStable + 1 : 0;
+		if (noCipherStable >= 3) {
+			$console.log('题目已渲染且未检测到加密文字，跳过初始解密等待。');
+			break;
+		}
 		await $.sleep(200);
 	}
 	if (!doc.querySelector(YKT_ENCRYPTED_SELECTOR)) {
 		$console.log('暂未检测到加密文字，将持续监听页面变化。');
+		dec_msg?.remove();
 	}
 
 	let firstDecrypt = true;
@@ -705,7 +740,8 @@ async function submitYktCurrentQuestion(doc: Document, order: string): Promise<b
 /**
  * 等待当前题目"可用"。就绪条件（需连续两次满足，防 Vue 分批渲染与解密竞态）：
  *   1. 题目标识已渲染（切题后 marker 变化）
- *   2. 正文 .problem-body 有非空文本（防止"题号先渲染、正文经 XHR 后到"时读到空/密文）
+ *   2. 正文 .problem-body 有非空文本或图片（防止"题号先渲染、正文经 XHR 后到"时读到空/密文；
+ *      纯公式题题干只有 img.kfformula，无文本）
  *   3. 无残留密文/解密中的元素（解密通过 decryptYktNow 主动触发，不依赖监听器时序）
  * 超时后放行（降级处理）。
  */
@@ -724,7 +760,10 @@ async function waitYktQuestionReady(prevMarker: string | null, doc: Document, ti
 	while (Date.now() - start < timeoutMs) {
 		// 主动解密当前密文并等待完成（幂等；无密文时立即返回）
 		await decryptYktNow(doc);
-		const hasContent = !!doc.querySelector('.container-problem .problem-body')?.textContent?.trim();
+		// 纯公式/图片题题干没有文本（仅 img.kfformula 等），图片也算有效内容，
+		// 否则会一直误判"正文未渲染"而等待到超时
+		const body = doc.querySelector('.container-problem .problem-body');
+		const hasContent = !!body?.textContent?.trim() || !!body?.querySelector('img');
 		const hasCipher = !!doc.querySelector(
 			`.container-problem ${YKT_ENCRYPTED_SELECTOR}, .container-problem .xuetangx-com-font-decrypting`
 		);
@@ -754,16 +793,31 @@ async function waitYktQuestionReady(prevMarker: string | null, doc: Document, ti
 const YKT_BLANK_INPUT_SELECTOR = 'input.blank-item-dynamic, input[placeholder="输入答案"]';
 
 /**
+ * 克隆题目元素用于文本提取，并将新版公式图片还原为 LaTeX 文本。
+ *
+ * 雨课堂新版公式题为 <img class="kfformula" src="data:image/png;base64,...">，
+ * LaTeX 源码保存在 data-latex 属性（data-slatex 为反斜杠双写的转义版，仅作兜底）。
+ * 若直接提取 img src，会向题干/选项注入大段 base64 文本导致搜题失败；
+ * 这里在克隆体上将公式图片替换为 $...$ 包裹的 LaTeX 文本（不破坏页面显示），
+ * 普通图片仍走 extractTextWithImages 的 URL 提取逻辑。
+ */
+function cloneYktForTextExtract(el: HTMLElement): HTMLElement {
+	const clone = el.cloneNode(true) as HTMLElement;
+	for (const img of Array.from(clone.querySelectorAll('img.kfformula'))) {
+		const latex = img.getAttribute('data-latex') || (img.getAttribute('data-slatex') || '').replace(/\\\\/g, '\\');
+		img.replaceWith(latex.trim() ? ` $${latex}$ ` : ' [公式] ');
+	}
+	return clone;
+}
+
+/**
  * 提取题干文本：横线填空题的答案输入框（placeholder="输入答案"）无文本内容，
  * 提取时会"消失"导致题库无法识别这是填空题；
  * 这里先克隆元素并把每个横线输入框替换为 ____ 文本再提取，
  * 如 "…内容包括：____、____、____、____。"
  */
 function extractYktTitleText(el: HTMLElement): string {
-	if (!el.querySelector(YKT_BLANK_INPUT_SELECTOR)) {
-		return extractTextWithImages(el).text;
-	}
-	const clone = el.cloneNode(true) as HTMLElement;
+	const clone = cloneYktForTextExtract(el);
 	for (const input of Array.from(clone.querySelectorAll(YKT_BLANK_INPUT_SELECTOR))) {
 		input.replaceWith('____');
 	}
@@ -778,9 +832,23 @@ function createYktAnswerWorker({
 	answerSeparators
 }: CommonWorkOptions) {
 	const redundanceWords = redundanceWordsText.split('\n').filter(Boolean);
+	const aiTitleExtract = (titles: (HTMLElement | undefined)[]) => {
+		const parts = titles
+			.filter((title): title is HTMLElement => !!title)
+			.map((title) => extractYktAIContent(title, YKT_BLANK_INPUT_SELECTOR));
+		return {
+			text: parts
+				.map((part) =>
+					removeRedundantWords(StringUtils.of(part.text).nowrap(' ').nospace().toString().trim(), redundanceWords)
+				)
+				.join(','),
+			images: parts.flatMap((part) => part.images)
+		};
+	};
 	const titleTransform = (titles: (HTMLElement | undefined)[]) =>
 		titles
-			.filter((t) => t?.innerText)
+			// 纯公式/图片题干 innerText 为空但仍是有效题目（公式会提取为 LaTeX 文本），不能过滤
+			.filter((t) => !!t && (!!t.textContent?.trim() || !!t.querySelector('img')))
 			.map((t) =>
 				t
 					? removeRedundantWords(
@@ -803,9 +871,49 @@ function createYktAnswerWorker({
 			return { text: '错', images: [] };
 		}
 		const textEl = option.querySelector('.radioText, .checkboxText');
-		return extractTextWithImages((textEl as HTMLElement) ?? option);
+		// 公式图转为 LaTeX，普通图片仍保留在当前选项分组中供 AI 输入。
+		return extractTextWithImages(cloneYktForTextExtract((textEl as HTMLElement) ?? option));
 	};
 	const optionText = (option: HTMLElement) => optionExtract(option).text;
+	const createAnswerer = (wrappers: CommonWorkOptions['answererWrappers'], forAI: boolean) =>
+		createCommonAnswerer({
+			titleTransform: (elements) => (forAI ? aiTitleExtract(elements.title) : titleTransform(elements.title)),
+			optionsTransform: (elements, ctx) => {
+				ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
+				if (ctx.type === 'completion') return '';
+				const items = (elements.options ?? []).map((option: HTMLElement) => {
+					const input = option.querySelector('input');
+					if (!forAI || input?.value === 'true' || input?.value === 'false') return optionExtract(option);
+					return extractYktAIContent((option.querySelector('.radioText, .checkboxText') as HTMLElement) ?? option);
+				});
+				return {
+					text: items.map((item: { text: string }) => item.text).join('\n'),
+					images: items.flatMap((item: { images: string[] }) => item.images),
+					items
+				};
+			},
+			answererWrappers: wrappers,
+			period
+		});
+	const aiWrappers = answererWrappers.filter((wrapper) => wrapper.ai || wrapper.aiEnsemble);
+	const bankWrappers = answererWrappers.filter((wrapper) => !wrapper.ai && !wrapper.aiEnsemble);
+	const aiAnswerer = aiWrappers.length ? createAnswerer(aiWrappers, true) : undefined;
+	const bankAnswerer = createAnswerer(bankWrappers, false);
+	const mixedAnswerers =
+		aiWrappers.length && bankWrappers.length
+			? answererWrappers.map((wrapper) => createAnswerer([wrapper], !!(wrapper.ai || wrapper.aiEnsemble)))
+			: [];
+	const answerQuestion = async (elements: any, ctx: Parameters<typeof bankAnswerer>[1]) => {
+		if (!aiAnswerer) return bankAnswerer(elements, ctx);
+		if (!bankWrappers.length) return aiAnswerer(elements, ctx);
+		// Keep traditional bank payloads unchanged even for programmatic mixed-wrapper calls.
+		ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
+		const contexts = mixedAnswerers.map(() => ({ ...ctx }));
+		const pending = mixedAnswerers.map((answerer, index) => answerer(elements, contexts[index]));
+		// Each common answerer sets its budget before awaiting; expose the longest to the worker.
+		ctx.searchDeadline = Math.max(ctx.searchDeadline || 0, ...contexts.map((context) => context.searchDeadline || 0));
+		return (await Promise.all(pending)).flat();
+	};
 
 	// OCSWorker 的 root 传字符串时会在【全局 document】上查询，
 	// 而雨课堂作业在 iframe 内（AI学伴课程页内嵌 iframe-exercise），
@@ -851,24 +959,7 @@ function createYktAnswerWorker({
 		},
 		thread: thread ?? 1,
 		answerSeparators: answerSeparators.split(',').map((s) => s.trim()),
-		answerer: createCommonAnswerer({
-			titleTransform: (elements) => titleTransform(elements.title),
-			optionsTransform: (elements, ctx) => {
-				// 顺带解析题型写入上下文
-				ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
-				if (ctx.type === 'completion') {
-					return '';
-				}
-				const items = (elements.options ?? []).map((o: HTMLElement) => optionExtract(o));
-				return {
-					text: items.map((item: { text: string }) => item.text).join('\n'),
-					images: items.flatMap((item: { images: string[] }) => item.images),
-					items
-				};
-			},
-			answererWrappers,
-			period
-		}),
+		answerer: answerQuestion,
 		work: async (ctx) => {
 			const type = ctx.type ?? defaultWorkTypeResolver(ctx) ?? 'single';
 			const resolver = createDefaultQuestionResolver(ctx, (o: HTMLElement) => optionText(o))[type];
@@ -1127,7 +1218,7 @@ function createYktEmbeddedWorkLoop(opts: CommonWorkOptions, doc: Document, onDon
 		if (!completedAll) {
 			$message.warn({
 				content: `题目未全部完成（已作答提交 ${finishCount}/${results.length} 题），请手动检查剩余题目。`,
-				duration: 0
+				duration: 60
 			});
 		} else {
 			$message.success({ content: `作业完成，全部 ${finishCount} 题已作答并逐题提交。` });
@@ -1156,15 +1247,14 @@ async function watch(options: { volume: number; playbackRate: number }) {
 		}
 
 		const media = (await waitForElement('video', {
-			timeout_seconds: 10 * 1000
-		})) as HTMLMediaElement | undefined;
+			timeout_seconds: 10 * 1000,
+			timeout_message: '视频元素加载超时'
+		})) as HTMLMediaElement;
 		console.log('media', media);
 		await $.sleep(1000);
-		if (media) {
-			state.study.currentMedia = media;
-			// 重置视频进度
-			media.currentTime = 1;
-		}
+		state.study.currentMedia = media;
+		// 重置视频进度
+		media.currentTime = 1;
 		return media;
 	};
 	$message.info('开始播放');
@@ -1193,7 +1283,7 @@ async function watch(options: { volume: number; playbackRate: number }) {
 			};
 			video.onended = () => {
 				clearCheckInterval();
-				$msg.success('视频学习完成');
+				$msgwc.success('视频学习完成');
 				// 正常播放结束
 				resolve();
 			};
@@ -1249,20 +1339,19 @@ async function ai_watch(options: { volume: number; playbackRate: number }) {
 		// 上面操作会导致元素刷新，这里重新获取视频
 		await $.sleep(1000);
 		const media = (await waitForElement('.detail-container video', {
-			timeout_seconds: 10 * 1000
+			timeout_seconds: 10 * 1000,
+			timeout_message: 'AI数字人视频元素加载超时'
 		})) as HTMLMediaElement;
 		console.log('media', media);
 		await $.sleep(1000);
 		state.study.currentMedia = media;
 		state.study.is_ai_watch_mode = true;
 
-		if (media) {
-			// 如果已经播放完了，则重置视频进度
-			media.currentTime = 1;
-			// 音量
-			media.volume = options.volume;
-			media.playbackRate = options.playbackRate;
-		}
+		// 如果已经播放完了，则重置视频进度
+		media.currentTime = 1;
+		// 音量
+		media.volume = options.volume;
+		media.playbackRate = options.playbackRate;
 		return state.study.currentMedia;
 	};
 	$message.info('开始播放');
@@ -1301,4 +1390,197 @@ async function ai_watch(options: { volume: number; playbackRate: number }) {
 			resolve();
 		};
 	});
+}
+
+/**
+ * 26年新版随堂练习界面，单独界面-从侧边栏任务中进入
+ */
+function examination(opts: CommonWorkOptions) {
+	$message.info(`开始考试`);
+	CommonProject.scripts.workResults.methods.init();
+
+	const redundanceWords = opts.redundanceWordsText.split('\n').filter(Boolean);
+	const titleTransform = (titles: (HTMLElement | undefined)[]) =>
+		titles
+			.filter((t) => t?.innerText)
+			.map((t) =>
+				t
+					? removeRedundantWords(
+							StringUtils.of(extractYktTitleText(t)).nowrap(' ').nospace().toString().trim(),
+							redundanceWords
+					  )
+					: ''
+			)
+			.join(',');
+	const titleForDisplay = (titles: (HTMLElement | undefined)[]) =>
+		opts.answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble)
+			? titles
+					.filter((node): node is HTMLElement => !!node)
+					.map((node) => extractYktAIContent(node).text)
+					.join('\n')
+			: titleTransform(titles);
+
+	const createAnswerer = (wrappers: CommonWorkOptions['answererWrappers'], forAI: boolean) =>
+		createCommonAnswerer({
+			titleTransform: (elements, ctx) => {
+				if (elements.title) {
+					if (!forAI) return titleTransform(elements.title);
+					const items: { text: string; images: string[] }[] = elements.title
+						.filter(Boolean)
+						.map((node: HTMLElement) => extractYktAIContent(node));
+					return { text: items.map((item) => item.text).join('\n'), images: items.flatMap((item) => item.images) };
+				}
+				return '';
+			},
+			// Plus 原生 AI 必须在发起请求前拿到网页题型、逐项选项与实际空位。
+			optionsTransform: (elements, ctx) => {
+				ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
+				if (ctx.type === 'completion') {
+					ctx.elements.options = elements.textareas;
+					return '';
+				}
+				const items: { text: string; images: string[] }[] = (elements.options ?? [])
+					.filter(Boolean)
+					.map((option: HTMLElement) => (forAI ? extractYktAIContent(option) : extractTextWithImages(option)));
+				return { text: items.map((item) => item.text).join('\n'), images: items.flatMap((item) => item.images), items };
+			},
+			answererWrappers: wrappers,
+			period: opts.period
+		});
+	const answerQuestion = async (elements: any, ctx: Parameters<ReturnType<typeof createAnswerer>>[1]) => {
+		ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
+		const contexts = opts.answererWrappers.map(() => ({ ...ctx }));
+		const pending = opts.answererWrappers.map((wrapper, index) =>
+			createAnswerer([wrapper], !!(wrapper.ai || wrapper.aiEnsemble))(elements, contexts[index])
+		);
+		ctx.searchDeadline = Math.max(ctx.searchDeadline || 0, ...contexts.map((context) => context.searchDeadline || 0));
+		return (await Promise.all(pending)).flat();
+	};
+
+	// 这里跟章节测试的连线题不一样，章节测试是新版连线题
+	/** 新建答题器 */
+	const worker = new OCSWorker({
+		root: '.exam-main--content .subject-item',
+		elements: {
+			title: '.clearfix.exam-font .custom_ueditor_cn_body',
+			options: 'ul.list-unstyled li .custom_ueditor_cn_body',
+			type: '.item-type',
+			textareas: (root) => {
+				// 主观题为 UEditor 富文本编辑器（iframe 作为填充目标）；
+				// 填空题为横线输入框（blank-item-dynamic / placeholder="输入答案"）；简答为原生 textarea
+				const editors = $$el('iframe[id^="ueditor_"]', root);
+				if (editors.length) {
+					return editors;
+				}
+				const blanks = $$el(YKT_BLANK_INPUT_SELECTOR, root);
+				return blanks.length ? blanks : $$el('textarea', root);
+			}
+		},
+		thread: opts.thread ?? 1,
+		answerSeparators: opts.answerSeparators.split(',').map((s) => s.trim()),
+		/** 默认搜题方法构造器 */
+		answerer: answerQuestion,
+
+		work: async (ctx) => {
+			const { elements, searchInfos } = ctx;
+
+			// 在非预览模式下会出现多个干扰项 type，这里提取正确的
+
+			const type: QuestionTypes =
+				ctx.type ??
+				(() => {
+					const cl = ctx?.root?.querySelector('.item-type')?.textContent?.trim() || '';
+					return cl.includes('单选题')
+						? 'single'
+						: cl.includes('多选题')
+						? 'multiple'
+						: cl.includes('判断题')
+						? 'judgement'
+						: cl.includes('填空题')
+						? 'completion'
+						: undefined;
+				})();
+
+			// 通用单选多选题
+			if (type && (type === 'multiple' || type === 'single')) {
+				const resolver = createDefaultQuestionResolver(ctx, (o) => extractTextWithImages(o).text)[type];
+				return await resolver(searchInfos, elements.options as HTMLElement[], async (type, answer, option) => {
+					if (!option?.querySelector('.el-icon-check')) {
+						option.click();
+						await $.sleep(500);
+					}
+				});
+			}
+			// 判断题处理
+			else if (type && type === 'judgement') {
+				if (opts.answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble)) {
+					return createDefaultQuestionResolver(ctx, (option) => extractTextWithImages(option).text).judgement(
+						searchInfos,
+						elements.options as HTMLElement[],
+						async (_type, _answer, option) => {
+							if (!option?.querySelector('.el-icon-check')) option.click();
+						}
+					);
+				}
+				const answersGroup = searchInfos.map((info) => info.results.map((res) => res.answer));
+				const optionTexts = ['对', '错'];
+				const result = resolveJudgement(answersGroup, optionTexts);
+				if (result.finish && result.option) {
+					const index = optionTexts.indexOf(result.option);
+					ctx.elements.options[index]?.click();
+					return { finish: true };
+				}
+				return { finish: false };
+			} else if (type === 'completion') {
+				const resolver = createDefaultQuestionResolver(ctx, (o) => extractTextWithImages(o).text).completion;
+				return await resolver(searchInfos, elements.textareas as HTMLElement[], async (type, answer, option) => {
+					if (option?.tagName === 'IFRAME') {
+						// 主观题：UEditor 富文本编辑器
+						fillYktUEditor(option as unknown as HTMLIFrameElement, answer);
+						await $.sleep(300);
+					} else {
+						// 填空题为 input 文本框，简答为 textarea
+						const input =
+							option?.tagName === 'TEXTAREA' || option?.tagName === 'INPUT'
+								? (option as unknown as HTMLInputElement | HTMLTextAreaElement)
+								: (option?.querySelector('textarea,input') as HTMLInputElement | HTMLTextAreaElement | null);
+						if (input) {
+							input.value = answer;
+							// Vue 受控组件必须派发 input 事件才能同步数据
+							input.dispatchEvent(new Event('input', { bubbles: true }));
+							await $.sleep(200);
+						}
+					}
+				});
+			}
+			return { finish: false };
+		},
+		/** 元素准备完毕后回调（仅一次）：填充全部题目，面板立即显示全部题目 */
+		async onResultsInit(_curr, _index, res) {
+			await CommonProject.scripts.workResults.methods.fillAll(
+				res.map((r, i) => simplifyWorkResult(r, titleForDisplay, i))
+			);
+		},
+
+		/** 完成答题后 */
+		async onResultsUpdate(current, index, res) {
+			await CommonProject.scripts.workResults.methods.update(
+				index,
+				simplifyWorkResult(current, titleForDisplay, index)
+			);
+		}
+	});
+
+	worker
+		.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug })
+		.then(() => {
+			$message.info({ content: '随堂练习完成，请自行检查后保存或提交。', duration: 0 });
+			worker.emit('done');
+		})
+		.catch((err) => {
+			console.error(err);
+			$message.error('答题程序发生错误 : ' + err.message);
+		});
+
+	return worker;
 }

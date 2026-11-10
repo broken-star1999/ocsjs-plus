@@ -217,6 +217,34 @@ function validateAIOptionItems(question: AIQuestion, type: AIQuestionType, image
 	for (const item of items) validateAIImageReferences(item.image_refs, imageCount);
 }
 
+/** Reject known empty extraction placeholders without interpreting short text, formulas or code. */
+function hasReadableAIText(value: string): boolean {
+	const text = value.replace(/[\s\u200b-\u200d\ufeff]/g, '');
+	if (!text) return false;
+	const content = text.replace(/_{2,}|＿{2,}|[﹍﹎﹏]{2,}|\[(?:公式|图片(?:\d+)?)\]/g, '');
+	return content === text
+		? !/^[。.，,、；;：:？?！!]+$/.test(text)
+		: content.replace(/[。.，,、；;：:？?！!（）()【】[\]]/g, '').length > 0;
+}
+
+function validateAIQuestionContent(question: AIQuestion, type: AIQuestionType, imageCount: number): void {
+	// Page-provided ownership is authoritative. An option image cannot replace a missing stem.
+	// Legacy callers may supply a screenshot of the whole question without separate image roles.
+	const hasStemImage =
+		imageCount > 0 && (question.question_image_refs === undefined || question.question_image_refs.length > 0);
+	if (!hasReadableAIText(question.suggestion_title || question.title) && !hasStemImage) {
+		throw new Error('题目提取不完整：未取得可读题干或题干图片，本题未请求 AI。请重新加载题目并检查图片题优化。');
+	}
+	if (
+		['single', 'multiple', 'judgement'].includes(type) &&
+		question.option_items !== undefined &&
+		!imageCount &&
+		question.option_items.every((item) => !hasReadableAIText(item.text))
+	) {
+		throw new Error('题目提取不完整：未取得可读选项或图片，本题未请求 AI。请重新加载题目并检查图片题优化。');
+	}
+}
+
 function answerRules(type: AIQuestionType, groupedOptions = false): string[] {
 	const choiceRules = [
 		groupedOptions
@@ -252,8 +280,22 @@ function answerRules(type: AIQuestionType, groupedOptions = false): string[] {
 
 export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 	if (!config.model.trim()) throw new Error('请先填写 AI 模型名称');
+	if (
+		[
+			question.title,
+			question.options || '',
+			question.suggestion_title || '',
+			question.suggestion_options || '',
+			...(question.option_items?.map((item) => item.text) || [])
+		].some((value) => value.includes('[公式无法识别]'))
+	) {
+		throw new Error('题目提取不完整：无法识别公式，本题未请求 AI。请检查页面公式或人工处理。');
+	}
 	const images = question.images || [];
 	const hasImages = images.length > 0;
+	if (images.some((image) => typeof image !== 'string' || !image.trim())) {
+		throw new Error('题目提取不完整：图片内容为空，本题未请求 AI。请重新加载题目并检查图片题优化。');
+	}
 	if (
 		question.expected_image_count !== undefined &&
 		(!Number.isInteger(question.expected_image_count) || question.expected_image_count < 0)
@@ -293,6 +335,7 @@ export function buildAIRequest(config: AIAnswererConfig, question: AIQuestion) {
 	) {
 		throw new Error('未取得有效的网页填写位置数量，本题未请求 AI。');
 	}
+	validateAIQuestionContent(question, type, images.length);
 	const host = new URL(normalizeAIEndpoint(config.endpoint)).hostname;
 	// Enable only documented official endpoints/models; compatible gateways remain opt-in.
 	const jsonMode =

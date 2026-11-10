@@ -16,8 +16,9 @@ import {
 } from '@ocsjs/core';
 import { createCXQuestionRetryAdapter } from '../utils/cx-question-retry';
 import { inspectAIWorkConfiguration } from '../utils/ai-work-status';
+import { extractCxAIContent } from '../utils/ai-cx-mathjax';
 import { readCXQuestionTypeCode } from '../utils/cx-question-type';
-import { crackFont, collectChars, decryptElements, extractFontFromStyle } from '../utils/font-decrypt';
+import { crackFont, collectChars, decryptElements, extractFontFromStyle, loadRefTable } from '../utils/font-decrypt';
 import { $modal, h, $store, MessageElement, Project, Script, $el, $gm, $$el, $ui, cors, $message } from 'easy-us';
 
 import { CommonEvents, CommonProject } from './common';
@@ -32,7 +33,7 @@ import {
 	updateDynamicResult
 } from '../utils/work';
 import { $console, BackgroundProject } from './background';
-import { CommonWorkOptions, playMedia } from '../utils';
+import { $msgwc, CommonWorkOptions, playMedia } from '../utils';
 import { createSteps } from '../utils/ui';
 import { waitForElement, waitForMedia } from '../utils/study';
 
@@ -250,10 +251,10 @@ export const CXProject = Project.create({
 					tag: 'select',
 					options: [
 						['next', '完成后跳转下一节', '完成小节后，自动点击下一节按钮'],
-						['job', '完成后跳转未完成任务点', '如果未找到任务点，则会直接结束脚本运行，目前处于试验阶段。'],
+						['job', '智能模式', '自动寻找任务点完成'],
 						['manually', '完成后暂停，等待手动跳转', '适用于自己手动运行']
 					],
-					defaultValue: 'next' as 'next' | 'job' | 'manually'
+					defaultValue: 'job' as 'next' | 'job' | 'manually'
 				},
 				restudy: {
 					label: '复习模式',
@@ -465,6 +466,9 @@ export const CXProject = Project.create({
 					return $message.info('当前作业已提交、自动答题关闭');
 				}
 
+				// 先等待字体解密完成，否则第一题会以密文搜题导致乱码
+				await ensureCxFontDecrypted();
+
 				const isExam = /\/exam\/preview/.test(location.href);
 				commonWork({
 					mount_script: this,
@@ -485,6 +489,8 @@ export const CXProject = Project.create({
 				if (location.href.includes('/page/quiz/stu/answerQuestion2')) {
 					await waitForElement('.left-question-list');
 					await $.sleep(1000);
+					// 先等待字体解密完成，否则第一题会以密文搜题导致乱码
+					await ensureCxFontDecrypted();
 					CORSUtils.pinWorkPanel();
 					commonWork({
 						iframe_control: true,
@@ -641,7 +647,7 @@ export const CXProject = Project.create({
 				['新版考试页面2', 'mooc-ans/exam/test/reVersionTestStartNew']
 			],
 			configs: { notes: workNotes },
-			oncomplete() {
+			async oncomplete() {
 				if ($gm.unsafeWindow.document.querySelector('.mark_info')?.textContent?.includes('不允许整卷预览')) {
 					$message.warn({
 						content: $ui.notes([
@@ -655,6 +661,8 @@ export const CXProject = Project.create({
 					const isExam = /\/exam\/test/.test(location.href);
 					const workOptions = CommonProject.scripts.settings.methods.getWorkOptions();
 					BackgroundProject.scripts.render.methods.pin(this);
+					// 先等待字体解密完成，否则第一题会以密文搜题导致乱码
+					await ensureCxFontDecrypted();
 					commonWork({
 						mount_script: this,
 						// 因为超星是每个题目一个页面，这里加快开始速度，避免等待，默认5秒，这里加快为默认3秒间隔
@@ -787,8 +795,12 @@ export const CXProject = Project.create({
 				['考试整卷预览', '/mooc2/exam/preview'],
 				['作业', '/mooc2/work/dowork']
 			],
+			onstart() {
+				// 页面加载即预下载特征表到缓存（不等 DOM 渲染），破解时无需等待网络
+				loadRefTable(CX_SECRET_REF_TABLE_URL).catch(() => undefined);
+			},
 			async oncomplete() {
-				await mappingRecognize();
+				await ensureCxFontDecrypted();
 			}
 		}),
 		// 积分课提示
@@ -834,7 +846,8 @@ function workOrExam(
 
 	// 处理作业和考试题目的方法
 	const workOrExamQuestionTitleTransform = (
-		titles: (HTMLElement | undefined)[]
+		titles: (HTMLElement | undefined)[],
+		forAI = false
 	): { text: string; images: string[] } => {
 		// 是否为多个小题的题目
 		const is_multiple_question = titles.length > 1;
@@ -852,7 +865,7 @@ function workOrExam(
 						childNodes[0]?.remove();
 					}
 					// 结构化遍历提取文本与图片 URL（不改造 DOM、不读 innerText）
-					const extracted = extractTextWithImages(titleCloneEl);
+					const extracted = forAI ? extractCxAIContent(titleCloneEl) : extractTextWithImages(titleCloneEl);
 					images.push(...extracted.images);
 					return extracted.text;
 				}
@@ -861,11 +874,13 @@ function workOrExam(
 			.join('\n');
 
 		const text = removeRedundantWords(
-			StringUtils.of(optimizationTitle)
-				.nowrap(is_multiple_question ? '\n' : ' ')
-				.nospace()
-				.toString()
-				.trim(),
+			forAI
+				? optimizationTitle.trim()
+				: StringUtils.of(optimizationTitle)
+						.nowrap(is_multiple_question ? '\n' : ' ')
+						.nospace()
+						.toString()
+						.trim(),
 			redundanceWordsText.split('\n')
 		);
 		return { text, images };
@@ -873,6 +888,52 @@ function workOrExam(
 	/** 仅供 simplifyWorkResult 等只需文本的调用方使用 */
 	const workOrExamQuestionTitleText = (titles: (HTMLElement | undefined)[]) =>
 		workOrExamQuestionTitleTransform(titles).text;
+
+	const createAnswerer = (
+		wrappers: CommonWorkOptions['answererWrappers'],
+		forAI: boolean,
+		prepare = () => ensureCxFontDecrypted()
+	) =>
+		createCommonAnswerer({
+			// 每次搜题前确保字体解密完成（第一题乱码防护）
+			beforeSearch: prepare,
+			titleTransform: (elements, ctx) => {
+				if (elements.title) {
+					return workOrExamQuestionTitleTransform(elements.title, forAI);
+				}
+				return '';
+			},
+			optionsTransform: (elements, ctx) => {
+				const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown';
+				ctx.type = type as any;
+				if (type === 'completion') return '';
+				const optResults = (ctx.elements.options ?? [])
+					.filter(Boolean)
+					.map((o: any) => (forAI ? extractCxAIContent(o) : extractTextWithImages(o)));
+				return {
+					text: optResults.map((r) => r.text).join('\n'),
+					images: optResults.flatMap((r) => r.images),
+					items: optResults
+				};
+			},
+			answererWrappers: wrappers,
+			period
+		});
+	const hasAI = answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble);
+	const hasBank = answererWrappers.some((wrapper) => !wrapper.ai && !wrapper.aiEnsemble);
+	const normalAnswerer = createAnswerer(answererWrappers, hasAI);
+	const answerQuestion: typeof normalAnswerer = async (elements, ctx) => {
+		if (!hasAI || !hasBank) return normalAnswerer(elements, ctx);
+		const prepare = () => ensureCxFontDecrypted();
+		const preparation = ctx.prepareForRetry && !ctx.forceSearch ? ctx.prepareForRetry(prepare) : prepare();
+		ctx.type = (getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown') as any;
+		const contexts = answererWrappers.map(() => ({ ...ctx, prepareForRetry: undefined }));
+		const pending = answererWrappers.map((wrapper, index) =>
+			createAnswerer([wrapper], !!(wrapper.ai || wrapper.aiEnsemble), () => preparation)(elements, contexts[index])
+		);
+		ctx.searchDeadline = Math.max(ctx.searchDeadline || 0, ...contexts.map((context) => context.searchDeadline || 0));
+		return (await Promise.all(pending)).flat();
+	};
 
 	// 这里跟章节测试的连线题不一样，章节测试是新版连线题
 	/** 新建答题器 */
@@ -904,27 +965,7 @@ function workOrExam(
 		thread: thread ?? 1,
 		answerSeparators: answerSeparators.split(',').map((s) => s.trim()),
 		/** 默认搜题方法构造器 */
-		answerer: createCommonAnswerer({
-			titleTransform: (elements, ctx) => {
-				if (elements.title) {
-					return workOrExamQuestionTitleTransform(elements.title);
-				}
-				return '';
-			},
-			optionsTransform: (elements, ctx) => {
-				const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown';
-				ctx.type = type as any;
-				if (type === 'completion') return '';
-				const optResults = (ctx.elements.options ?? []).filter(Boolean).map((o: any) => extractTextWithImages(o));
-				return {
-					text: optResults.map((r) => r.text).join('\n'),
-					images: optResults.flatMap((r) => r.images),
-					items: optResults
-				};
-			},
-			answererWrappers,
-			period
-		}),
+		answerer: answerQuestion,
 
 		work: async (ctx) => {
 			const { elements, searchInfos } = ctx;
@@ -1061,6 +1102,8 @@ function workOrExam(
 
 		(async () => {
 			while (next && worker.isClose === false) {
+				// 逐题切换后新渲染的加密文字需增量解密（映射表已缓存，毫秒级）
+				await ensureCxFontDecrypted();
 				await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
 				if (worker.isClose) break;
 				$message.info({ content: '已完成，即将下一题', duration: 0 });
@@ -1117,6 +1160,10 @@ function mobilelearn(opts: CommonWorkOptions) {
 		answerSeparators: opts.answerSeparators.split(',').map((s) => s.trim()),
 		/** 默认搜题方法构造器 */
 		answerer: createCommonAnswerer({
+			// Plus 单题重做仍需可信预处理，入口解密沿用上游；复用缓存处理晚渲染文字。
+			beforeSearch: opts.answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble)
+				? () => ensureCxFontDecrypted()
+				: undefined,
 			titleTransform: (elements, ctx) => {
 				if (elements.title) {
 					return titleTransform(elements.title);
@@ -1214,11 +1261,71 @@ function mobilelearn(opts: CommonWorkOptions) {
  * @see 算法详解见 utils/font-decrypt/bitmap.ts 文件头注释
  * @see 参考 https://bbs.tampermonkey.net.cn/thread-2303-1-1.html
  */
-async function mappingRecognize(doc: Document = document) {
-	// 从 @font-face 的 data URI 中提取加密字体
-	const fontBuffer = extractFontFromStyle(doc, 'font-cxsecret');
-	if (!fontBuffer) {
-		$console.log('未检测到加密文字。');
+/**
+ * 字体解密（首破 + 增量模式）
+ *
+ * 解密需拉取特征表并逐字破解、耗时数秒；若答题先开始，第一题会以密文搜题导致乱码。
+ * 因此所有答题路径统一在入口等待：创建 OCSWorker / 获取题目元素 / 广播开始状态之前
+ * await ensureCxFontDecrypted，保证后续取题时 DOM 必是明文。
+ * 注意章节测试在 iframe 中，必须传入 iframe 的 document，否则外层文档无加密元素会立即放行。
+ *
+ * 完整破解只跑一次并缓存映射表；题目后渲染/页面重绘产生的加密元素，
+ * 复用映射表增量解密（纯文本替换，毫秒级）。
+ */
+let cxFontMap: Record<string, string> | undefined;
+let cxFontCrackJob: Promise<Record<string, string> | undefined> | undefined;
+/** 破解已失败过（不再重试，避免每次搜题重复耗时破解） */
+let cxFontCrackFailed = false;
+
+/** 完整破解（幂等，只跑一次）：提取加密字体并破解当前出现的密文字符 */
+function crackCxFontOnce(doc: Document): Promise<Record<string, string> | undefined> {
+	if (!cxFontCrackJob) {
+		cxFontCrackJob = (async () => {
+			// 从 @font-face 的 data URI 中提取加密字体
+			const fontBuffer = extractFontFromStyle(doc, 'font-cxsecret');
+			if (!fontBuffer) {
+				$console.log('未检测到加密文字。');
+				return undefined;
+			}
+			const fonts = CXAnalyses.getSecretFont(doc);
+			if (fonts.length === 0) {
+				return undefined;
+			}
+
+			const t = Date.now();
+			try {
+				// 只破解页面实际出现的字符（通常几十个），避免全字表扫描
+				const { map, details } = await crackFont(fontBuffer, collectChars(fonts), {
+					refTableUrl: CX_SECRET_REF_TABLE_URL,
+					onProgress: (done, total) => console.log(`加密文字识别中 ${done}/${total}`)
+				});
+				const lowMargin = details.filter((d) => d.margin < 0.3);
+				if (lowMargin.length > 0) {
+					const msg = `有 ${lowMargin.length} 个字符识别置信度较低，可能存在误差`;
+					$console.warn(msg);
+					console.log(msg, lowMargin);
+				}
+				$console.info('文字解密完成，耗时 ' + ((Date.now() - t) / 1000).toFixed(1) + ' 秒');
+				return map;
+			} catch (err) {
+				cxFontCrackFailed = true;
+				$console.error('加密文字识别失败：', String(err));
+				$message.error('加密文字识别失败：' + String(err));
+				return undefined;
+			}
+		})();
+	}
+	return cxFontCrackJob;
+}
+
+/**
+ * 字体解密守卫（幂等增量）：
+ * - 页面无加密元素：立即放行（不缓存否定结论，覆盖题目后渲染场景）
+ * - 已有映射表：增量解密新渲染的加密元素（毫秒级）
+ * - 首次发现加密元素：等待完整破解（秒级）
+ */
+async function ensureCxFontDecrypted(doc: Document = document): Promise<void> {
+	if (cxFontCrackFailed) {
 		return;
 	}
 	const fonts = CXAnalyses.getSecretFont(doc);
@@ -1226,26 +1333,18 @@ async function mappingRecognize(doc: Document = document) {
 		return;
 	}
 
-	const t = Date.now();
-	try {
-		// 只破解页面实际出现的字符（通常几十个），避免全字表扫描
-		const { map, details } = await crackFont(fontBuffer, collectChars(fonts), {
-			refTableUrl: CX_SECRET_REF_TABLE_URL,
-			onProgress: (done, total) => console.log(`加密文字识别中 ${done}/${total}`)
-		});
-		const lowMargin = details.filter((d) => d.margin < 0.3);
-		if (lowMargin.length > 0) {
-			const msg = `有 ${lowMargin.length} 个字符识别置信度较低，可能存在误差`;
-			$console.warn(msg);
-			console.log(msg, lowMargin);
+	if (!cxFontMap) {
+		cxFontMap = await crackCxFontOnce(doc);
+		if (!cxFontMap) {
+			// 字体/题目尚未渲染完成：清空任务允许下次搜题重试（破解失败已由 cxFontCrackFailed 拦截）
+			cxFontCrackJob = undefined;
+			return;
 		}
-		decryptElements(fonts, map);
-		fonts.forEach((el) => el.classList.remove('font-cxsecret')); // 移除字体加密
-		$console.info('文字解密完成，耗时 ' + ((Date.now() - t) / 1000).toFixed(1) + ' 秒');
-	} catch (err) {
-		$console.error('加密文字识别失败：', String(err));
-		$message.error('加密文字识别失败：' + String(err));
 	}
+
+	// 增量应用映射表并移除加密标记（移除后 getSecretFont 不再选中，天然幂等）
+	decryptElements(fonts, cxFontMap);
+	fonts.forEach((el) => el.classList.remove('font-cxsecret'));
 }
 
 /**
@@ -1505,37 +1604,68 @@ export async function study(opts: typeof CXProject.scripts.study.cfg) {
 	// @ts-ignore
 	top._preChapterId = '';
 
-	// 下一章
-	const next = async () => {
-		if (CXAnalyses.isInFinalTab()) {
-			if (await CXAnalyses.isStuckInBreakingMode()) {
-				return $modal.alert({
-					content:
-						'检测到当前课程为闯关模式（有小旗帜图标）, 但是已经重复进入多次，应该是章节测试没有完成，或者其他情况导致，请手动完成章节测试，然后手动点击下一章。'
-				});
+	// 手动模式
+	if (CXProject.scripts.study.cfg.mode === 'manually') {
+		const msg = '页面任务点已完成，自动跳转已关闭，请手动跳转。';
+		$message.warn({ content: msg, duration: 0 });
+		$console.warn(msg);
+		return;
+	}
+
+	// 闯关模式卡死
+	if (CXAnalyses.isInFinalTab() && (await CXAnalyses.isStuckInBreakingMode())) {
+		return $modal.alert({
+			content:
+				'检测到当前课程为闯关模式（有小旗帜图标）, 但是已经重复进入多次，应该是章节测试没有完成，或者其他情况导致，请手动完成章节测试，然后手动点击下一章。'
+		});
+	}
+
+	// 全部小节、章节便利完成判断
+	if (CXAnalyses.isInFinalChapter() && CXAnalyses.isInFinalTab()) {
+		let content = '';
+
+		if (opts.backToFirstWhenFinish) {
+			content = '已经抵达最后一个章节，10秒后返回第一个章节重新开始。';
+			setTimeout(() => {
+				top?.document.querySelector<HTMLElement>('.posCatalog_name')?.click();
+			}, 10 * 1000);
+		} else {
+			if (CXAnalyses.isFinishedAllChapters()) {
+				content = '全部任务点已完成！';
+			} else {
+				content = '已经抵达最后一个章节！但仍然有任务点未完成，请手动切换至未完成的章节。';
+				$modal.alert({ content: content });
 			}
 		}
 
-		if (CXAnalyses.isInFinalChapter()) {
-			let content = '';
+		$msgwc.info({ content, duration: 30 });
+		CommonProject.scripts.settings.methods.notificationBySetting(content, {
+			duration: 0,
+			extraTitle: '超星学习通学习脚本'
+		});
+		return;
+	}
 
-			if (opts.backToFirstWhenFinish) {
-				content = '已经抵达最后一个章节，10秒后返回第一个章节重新开始。';
-				setTimeout(() => {
-					top?.document.querySelector<HTMLElement>('.posCatalog_name')?.click();
-				}, 10 * 1000);
+	const msg = '页面任务点已完成，即将跳转。' + `(${CXProject.scripts.study.cfg.mode})`;
+	$message.success({ content: msg });
+	$console.info(msg);
+	await $.sleep(3000);
 
-				$message.info({ content, duration: 30 });
-			} else {
-				if (CXAnalyses.isFinishedAllChapters()) {
-					content = '全部任务点已完成！';
-				} else {
-					content = '已经抵达最后一个章节！但仍然有任务点未完成，请手动切换至未完成的章节。';
-				}
+	// 智能模式，并且当前已经完成全部小节，则自动跳章节
+	if (CXProject.scripts.study.cfg.mode === 'job' && CXAnalyses.isInFinalTab()) {
+		// 检测当前章节是否完成，如果已经完成则下一章
+		// 如果没有需要完成的章节，则暂停运行
+		const chapters = CXAnalyses.getChapterInfos();
+		const currentIndex = chapters.findIndex((info) =>
+			info.element.parentElement?.classList.contains('posCatalog_active')
+		);
+		const next_chapter = chapters.find((info, index) => {
+			return index > currentIndex && info.unFinishCount > 0;
+		});
 
-				$modal.alert({ content: content });
-			}
-
+		if (!next_chapter) {
+			const content = '全部任务点已完成！';
+			$modal.alert({ content: content });
 			CommonProject.scripts.settings.methods.notificationBySetting(content, {
 				duration: 0,
 				extraTitle: '超星学习通学习脚本'
@@ -1543,74 +1673,35 @@ export async function study(opts: typeof CXProject.scripts.study.cfg) {
 			return;
 		}
 
-		if (CXProject.scripts.study.cfg.mode === 'job') {
-			// 检测当前章节是否完成，如果已经完成则下一章
-			// 如果没有需要完成的章节，则暂停运行
+		next_chapter?.element?.click();
+		setTimeout(() => {
+			CXAnalyses.scrollToActiveChapter();
+		}, 1000);
+		return;
+	}
 
-			if (CXAnalyses.isInFinalTab()) {
-				// 找到未完成
-				const elements = CXAnalyses.getChapterInfos()
-					.filter((el) => el.unFinishCount > 0 || el.element.parentElement?.classList.contains('posCatalog_active'))
-					.map((el) => el.element.parentElement as HTMLElement);
-				if (elements.length === 0) {
-					const content = '全部任务点已完成！';
-					$modal.alert({ content: content });
-					CommonProject.scripts.settings.methods.notificationBySetting(content, {
-						duration: 0,
-						extraTitle: '超星学习通学习脚本'
-					});
-					return;
-				}
+	// 自动下一章（包含自动下一章的算法）
+	const curCourseId = $el<HTMLInputElement>('#curCourseId', top?.document);
+	const curChapterId = $el<HTMLInputElement>('#curChapterId', top?.document);
+	const curClazzId = $el<HTMLInputElement>('#curClazzId', top?.document);
+	const count = $$el('#prev_tab .prev_ul li', top?.document);
 
-				let nextChapter = elements[0];
-				// 如果当前章节未完成，则跳转到下一个未完成章节
-				const currentIndex = elements.findIndex((el) => el.classList.contains('posCatalog_active'));
-				if (currentIndex !== -1 && currentIndex + 1 < elements.length) {
-					nextChapter = elements[currentIndex + 1];
-					CXAnalyses.scrollToActiveChapter();
-					setTimeout(() => {
-						nextChapter.querySelector<HTMLElement>('.posCatalog_name')?.click();
-					}, 1000);
-				}
-			}
-		} else if (CXProject.scripts.study.cfg.mode === 'next') {
-			const curCourseId = $el<HTMLInputElement>('#curCourseId', top?.document);
-			const curChapterId = $el<HTMLInputElement>('#curChapterId', top?.document);
-			const curClazzId = $el<HTMLInputElement>('#curClazzId', top?.document);
-			const count = $$el('#prev_tab .prev_ul li', top?.document);
+	// 自动下一个小节（点击下一节）
+	if (curChapterId && curCourseId && curClazzId) {
+		// @ts-ignore
+		top._preChapterId = curChapterId.value;
+		CXAnalyses.scrollToActiveChapter();
+		// 等待跳转动画完成
+		await $.sleep(200);
 
-			// 自动下一个小节（点击下一节）
-			if (curChapterId && curCourseId && curClazzId) {
-				// @ts-ignore
-				top._preChapterId = curChapterId.value;
-				CXAnalyses.scrollToActiveChapter();
-				// 等待跳转动画完成
-				await $.sleep(200);
-
-				/**
-				 * count, chapterId, courseId, clazzid, knowledgestr, checkType
-				 * checkType 就是询问当前章节还有任务点未完成，是否完成，这里直接不传，默认下一章
-				 */
-				// @ts-ignore
-				top?.PCount.next(count.length.toString(), curChapterId.value, curCourseId.value, curClazzId.value, '');
-			} else {
-				$console.warn('参数错误，无法跳转下一章，请尝试手动切换。');
-			}
-		} else {
-			$console.warn('未知的跳转模式，请联系作者反馈');
-		}
-	};
-
-	if (CXProject.scripts.study.cfg.mode !== 'manually') {
-		const msg = '页面任务点已完成，即将跳转。';
-		$message.success({ content: msg });
-		$console.info(msg);
-		await $.sleep(5000);
-		next();
+		/**
+		 * count, chapterId, courseId, clazzid, knowledgestr, checkType
+		 * checkType 就是询问当前章节还有任务点未完成，是否完成，这里直接不传，默认下一章
+		 */
+		// @ts-ignore
+		top?.PCount.next(count.length.toString(), curChapterId.value, curCourseId.value, curClazzId.value, '');
 	} else {
-		const msg = '页面任务点已完成，自动跳转已关闭，请手动跳转。';
-		$message.warn({ content: msg, duration: 0 });
-		$console.warn(msg);
+		$console.warn('参数错误，无法跳转下一章，请尝试手动切换。');
 	}
 }
 
@@ -1992,11 +2083,16 @@ const JobRunner = {
 			return $message.warn({ content: readiness.error, duration: 0 });
 		}
 
+		const visual_state = BackgroundProject.scripts.render.cfg.visual;
+		const frameWindow = frame.contentWindow;
+
+		// 章节测试题目位于 iframe 文档内，加密文字元素也在其中；
+		// 必须先等待该文档字体解密完成，再广播状态/获取题目元素，否则第一题会以密文搜题导致乱码
+		await ensureCxFontDecrypted(frameWindow!.document);
+
 		// 章节测试未使用 commonWork，这里手动触发状态更新
 		CommonEvents.emitWorkerStateChange('start');
 
-		const visual_state = BackgroundProject.scripts.render.cfg.visual;
-		const frameWindow = frame.contentWindow;
 		const { TiMu } = domSearchAll({ TiMu: '.TiMu' }, frameWindow!.document);
 
 		// 最大化面板
