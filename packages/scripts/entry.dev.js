@@ -40,6 +40,7 @@ const infos = GM_info;
 
 	// 运行脚本
 	start({
+		OCS_TYPE: 'dev',
 		projects: projects,
 		renderConfig: {
 			renderScript: RenderScript,

@@ -33,7 +33,7 @@ import {
 	updateDynamicResult
 } from '../utils/work';
 import { $console, BackgroundProject } from './background';
-import { CommonWorkOptions, playMedia } from '../utils';
+import { $msgwc, CommonWorkOptions, playMedia } from '../utils';
 import { createSteps } from '../utils/ui';
 import { waitForElement, waitForMedia } from '../utils/study';
 
@@ -489,6 +489,8 @@ export const CXProject = Project.create({
 				if (location.href.includes('/page/quiz/stu/answerQuestion2')) {
 					await waitForElement('.left-question-list');
 					await $.sleep(1000);
+					// 先等待字体解密完成，否则第一题会以密文搜题导致乱码
+					await ensureCxFontDecrypted();
 					CORSUtils.pinWorkPanel();
 					commonWork({
 						iframe_control: true,
@@ -1100,6 +1102,8 @@ function workOrExam(
 
 		(async () => {
 			while (next && worker.isClose === false) {
+				// 逐题切换后新渲染的加密文字需增量解密（映射表已缓存，毫秒级）
+				await ensureCxFontDecrypted();
 				await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
 				if (worker.isClose) break;
 				$message.info({ content: '已完成，即将下一题', duration: 0 });
@@ -1156,8 +1160,10 @@ function mobilelearn(opts: CommonWorkOptions) {
 		answerSeparators: opts.answerSeparators.split(',').map((s) => s.trim()),
 		/** 默认搜题方法构造器 */
 		answerer: createCommonAnswerer({
-			// 每次搜题前确保字体解密完成（第一题乱码防护）
-			beforeSearch: () => ensureCxFontDecrypted(),
+			// Plus 单题重做仍需可信预处理，入口解密沿用上游；复用缓存处理晚渲染文字。
+			beforeSearch: opts.answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble)
+				? () => ensureCxFontDecrypted()
+				: undefined,
 			titleTransform: (elements, ctx) => {
 				if (elements.title) {
 					return titleTransform(elements.title);
@@ -1258,10 +1264,10 @@ function mobilelearn(opts: CommonWorkOptions) {
 /**
  * 字体解密（首破 + 增量模式）
  *
- * 解密脚本（cxSecretFontRecognize）与答题脚本（作业/考试）独立并发启动，
  * 解密需拉取特征表并逐字破解、耗时数秒；若答题先开始，第一题会以密文搜题导致乱码。
- * 因此所有搜题路径（含入口启动与 createCommonAnswerer 的 beforeSearch 钩子）
- * 统一经 ensureCxFontDecrypted 守卫：搜题时 DOM 必是明文。
+ * 因此所有答题路径统一在入口等待：创建 OCSWorker / 获取题目元素 / 广播开始状态之前
+ * await ensureCxFontDecrypted，保证后续取题时 DOM 必是明文。
+ * 注意章节测试在 iframe 中，必须传入 iframe 的 document，否则外层文档无加密元素会立即放行。
  *
  * 完整破解只跑一次并缓存映射表；题目后渲染/页面重绘产生的加密元素，
  * 复用映射表增量解密（纯文本替换，毫秒级）。
@@ -1614,7 +1620,8 @@ export async function study(opts: typeof CXProject.scripts.study.cfg) {
 		});
 	}
 
-	if (CXAnalyses.isInFinalChapter()) {
+	// 全部小节、章节便利完成判断
+	if (CXAnalyses.isInFinalChapter() && CXAnalyses.isInFinalTab()) {
 		let content = '';
 
 		if (opts.backToFirstWhenFinish) {
@@ -1622,18 +1629,16 @@ export async function study(opts: typeof CXProject.scripts.study.cfg) {
 			setTimeout(() => {
 				top?.document.querySelector<HTMLElement>('.posCatalog_name')?.click();
 			}, 10 * 1000);
-
-			$message.info({ content, duration: 30 });
 		} else {
 			if (CXAnalyses.isFinishedAllChapters()) {
 				content = '全部任务点已完成！';
 			} else {
 				content = '已经抵达最后一个章节！但仍然有任务点未完成，请手动切换至未完成的章节。';
+				$modal.alert({ content: content });
 			}
-
-			$modal.alert({ content: content });
 		}
 
+		$msgwc.info({ content, duration: 30 });
 		CommonProject.scripts.settings.methods.notificationBySetting(content, {
 			duration: 0,
 			extraTitle: '超星学习通学习脚本'
@@ -1641,7 +1646,7 @@ export async function study(opts: typeof CXProject.scripts.study.cfg) {
 		return;
 	}
 
-	const msg = '页面任务点已完成，即将跳转。';
+	const msg = '页面任务点已完成，即将跳转。' + `(${CXProject.scripts.study.cfg.mode})`;
 	$message.success({ content: msg });
 	$console.info(msg);
 	await $.sleep(3000);
@@ -1650,11 +1655,15 @@ export async function study(opts: typeof CXProject.scripts.study.cfg) {
 	if (CXProject.scripts.study.cfg.mode === 'job' && CXAnalyses.isInFinalTab()) {
 		// 检测当前章节是否完成，如果已经完成则下一章
 		// 如果没有需要完成的章节，则暂停运行
-		// 找到未完成
-		const elements = CXAnalyses.getChapterInfos()
-			.filter((el) => el.unFinishCount > 0 || el.element.parentElement?.classList.contains('posCatalog_active'))
-			.map((el) => el.element.parentElement as HTMLElement);
-		if (elements.length === 0) {
+		const chapters = CXAnalyses.getChapterInfos();
+		const currentIndex = chapters.findIndex((info) =>
+			info.element.parentElement?.classList.contains('posCatalog_active')
+		);
+		const next_chapter = chapters.find((info, index) => {
+			return index > currentIndex && info.unFinishCount > 0;
+		});
+
+		if (!next_chapter) {
 			const content = '全部任务点已完成！';
 			$modal.alert({ content: content });
 			CommonProject.scripts.settings.methods.notificationBySetting(content, {
@@ -1664,16 +1673,11 @@ export async function study(opts: typeof CXProject.scripts.study.cfg) {
 			return;
 		}
 
-		let nextChapter = elements[0];
-		// 如果当前章节未完成，则跳转到下一个未完成章节
-		const currentIndex = elements.findIndex((el) => el.classList.contains('posCatalog_active'));
-		if (currentIndex !== -1 && currentIndex + 1 < elements.length) {
-			nextChapter = elements[currentIndex + 1];
+		next_chapter?.element?.click();
+		setTimeout(() => {
 			CXAnalyses.scrollToActiveChapter();
-			setTimeout(() => {
-				nextChapter.querySelector<HTMLElement>('.posCatalog_name')?.click();
-			}, 1000);
-		}
+		}, 1000);
+		return;
 	}
 
 	// 自动下一章（包含自动下一章的算法）
@@ -2079,11 +2083,16 @@ const JobRunner = {
 			return $message.warn({ content: readiness.error, duration: 0 });
 		}
 
+		const visual_state = BackgroundProject.scripts.render.cfg.visual;
+		const frameWindow = frame.contentWindow;
+
+		// 章节测试题目位于 iframe 文档内，加密文字元素也在其中；
+		// 必须先等待该文档字体解密完成，再广播状态/获取题目元素，否则第一题会以密文搜题导致乱码
+		await ensureCxFontDecrypted(frameWindow!.document);
+
 		// 章节测试未使用 commonWork，这里手动触发状态更新
 		CommonEvents.emitWorkerStateChange('start');
 
-		const visual_state = BackgroundProject.scripts.render.cfg.visual;
-		const frameWindow = frame.contentWindow;
 		const { TiMu } = domSearchAll({ TiMu: '.TiMu' }, frameWindow!.document);
 
 		// 最大化面板
@@ -2149,8 +2158,6 @@ const JobRunner = {
 			answerSeparators: answerSeparators.split(',').map((s) => s.trim()),
 			/** 默认搜题方法构造器 */
 			answerer: createCommonAnswerer({
-				// 每次搜题前确保字体解密完成（第一题乱码防护）
-				beforeSearch: () => ensureCxFontDecrypted(),
 				titleTransform: (elements, ctx) => chapterTestTaskQuestionTitleTransform(elements.title),
 				optionsTransform: (elements, ctx) => {
 					const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown';

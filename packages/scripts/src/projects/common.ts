@@ -206,6 +206,12 @@ const state = {
 			'zhs-hike': (index: number) => {
 				document.querySelectorAll<HTMLElement>('.q_main_right .card_ul .card_li').item(index)?.click();
 			},
+			'zhs-hike-answer-training': (index: number) => {
+				document
+					.querySelectorAll<HTMLElement>('.base-question-component')
+					.item(index)
+					?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			},
 			icve: (index: number) => {
 				document.querySelectorAll<HTMLElement>(`.sheet_nums [id*="sheetSeq"]`).item(index)?.click();
 			},
@@ -450,6 +456,9 @@ export const CommonProject = Project.create({
 						);
 					}
 				},
+				OCS_TYPE: {
+					defaultValue: '' as 'dev' | 'common' | 'main' | ''
+				},
 				answererWrappers: {
 					separator: '自动答题设置',
 					defaultValue: [] as AnswererWrapper[]
@@ -481,6 +490,7 @@ export const CommonProject = Project.create({
 						return getAnswererConfigProvider() ? createAnswererModeDropdown() : '';
 					},
 					onload() {
+						const OCS_TYPE = CommonProject.scripts.settings.cfg.OCS_TYPE;
 						const aws: any[] = CommonProject.scripts.settings.cfg.answererWrappers || [];
 						this.value = aws.length ? aws.length + ' 个可用题库（点击进入配置）' : '点击进入配置';
 
@@ -781,14 +791,18 @@ export const CommonProject = Project.create({
 										]
 									)
 								],
-								[
-									h(
-										'div',
-										{ className: 'secondary' },
-										'⚠️ 如果想添加多个不同的题库配置，请在每个配置之间使用三个井号隔开: ###。'
-									)
-								],
-								[h('div', { className: 'secondary' }, '⚠️ 配置第三方题库出现网页弹窗的，点击永久允许连接。')]
+								...(OCS_TYPE === 'common'
+									? [
+											[
+												h(
+													'div',
+													{ className: 'secondary' },
+													'⚠️ 如果想添加多个不同的题库配置，请在每个配置之间使用三个井号隔开: ###。'
+												)
+											],
+											[h('div', { className: 'secondary' }, '⚠️ 配置第三方题库出现网页弹窗的，点击永久允许连接。')]
+									  ]
+									: [])
 							]);
 
 							/** 清空题库配置（确认后清空并关闭弹窗），一键获取/手动配置弹窗共用 */
@@ -1363,7 +1377,8 @@ export const CommonProject = Project.create({
 				);
 			},
 			// 实时更新内部设置
-			oncomplete() {
+			oncomplete({ OCS_TYPE }) {
+				this.cfg.OCS_TYPE = OCS_TYPE;
 				// The shared tab ID exists only after start(); register cross-frame events after that.
 				const report = cors.defineTopFunction((record: AICallRecord) => updateAICallRecord(record));
 				if (self !== top) {
