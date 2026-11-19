@@ -36,7 +36,7 @@
 		"build:style": "node scripts/build-style.js",
 		"watch:style": "node scripts/build-style.js --watch",
 		"test:mathjax": "tsx --import ./tests/setup-browser-env.ts tests/cx-mathjax-ai-compat.test.ts && tsx --import ./tests/setup-browser-env.ts tests/mathjax-svg.test.ts",
-		"test:plus-compat": "tsx --import ./tests/setup-browser-env.ts tests/ai-input-completeness.test.ts && tsx --import ./tests/setup-browser-env.ts tests/retry-decryption-compat.test.ts && tsx --import ./tests/setup-browser-env.ts tests/ai-provider-draft-close.test.ts && tsx --import ./tests/setup-browser-env.ts tests/plus-ykt-ai-compat.test.ts"
+		"test:plus-compat": "tsx --import ./tests/setup-browser-env.ts tests/ai-input-completeness.test.ts && tsx --import ./tests/setup-browser-env.ts tests/retry-decryption-compat.test.ts && tsx --import ./tests/setup-browser-env.ts tests/ai-provider-draft-close.test.ts && tsx --import ./tests/setup-browser-env.ts tests/plus-ykt-ai-compat.test.ts && tsx --import ./tests/setup-browser-env.ts tests/bank-fallback.test.ts"
 	},
 	"packageManager": "pnpm@10.30.3",
 	"devDependencies": {

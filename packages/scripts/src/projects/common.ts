@@ -48,6 +48,7 @@ import {
 } from '../utils/question-retry-control';
 import { createAIConsensusSettingsButton } from '../utils/ai-consensus-settings';
 import { createAIWorkSummary, inspectAIWorkConfiguration } from '../utils/ai-work-status';
+import { searchBanksThenAI, unavailableBankFallback, withBankFallback } from '../utils/bank-fallback';
 import { isAIQuestionCacheSource } from '../utils/question-cache';
 import {
 	readSearchSelection,
@@ -152,6 +153,18 @@ const cacheIfFinished = (result: SimplifyWorkResult) => {
  */
 const answererListHandlers = {
 	isDisabled: (name: string) => CommonProject.scripts.settings.cfg.disabledAnswererWrapperNames.includes(name),
+	onMove: (bank: AnswererWrapper, offset: number) => {
+		const settings = CommonProject.scripts.settings;
+		const banks = [...settings.cfg.answererWrappers];
+		const serialized = JSON.stringify(bank);
+		const index = banks.findIndex((item) => JSON.stringify(item) === serialized);
+		const next = index + offset;
+		if (index >= 0 && next >= 0 && next < banks.length) {
+			banks.splice(index, 1);
+			banks.splice(next, 0, bank);
+			settings.cfg.answererWrappers = banks;
+		}
+	},
 	onToggle: (name: string, disabled: boolean) => {
 		if (disabled) {
 			CommonProject.scripts.settings.cfg.disabledAnswererWrapperNames = [
@@ -273,7 +286,7 @@ export const CommonProject = Project.create({
 				notes: {
 					defaultValue: $ui.notes([
 						'✨鼠标移动到按钮或者输入框，可以看到提示！',
-						'在“模型提供商”中保存接口并添加模型，再选择普通模式模型或配置高级模式。关闭 AI 后可使用原有题库。',
+						'在“模型提供商”中保存接口并添加模型，再选择普通模式模型或配置高级模式。也可以开启题库优先。',
 						'题目和选项将发送到你填写的 AI 服务；答案需自行核对。',
 						'设置后进入章节测试，作业，考试页面即可自动答题。'
 					]).outerHTML
@@ -281,9 +294,18 @@ export const CommonProject = Project.create({
 				aiEnabled: {
 					enableForAttribute: true,
 					separator: 'AI 答题（OpenAI 兼容接口）',
-					label: '使用 AI 替代题库',
+					label: '使用 AI 答题',
 					attrs: { type: 'checkbox' },
 					defaultValue: true
+				},
+				aiBankFallback: {
+					label: '题库优先，AI 兜底',
+					showIf: 'common.settings.aiEnabled',
+					defaultValue: false,
+					attrs: {
+						type: 'checkbox',
+						title: '按题库配置中的顺序逐个搜索。有可用答案即可停止，题库都没有可用答案时再请求 AI。'
+					}
 				},
 				// Legacy settings are kept only for one-time migration.
 				aiEndpoint: { defaultValue: 'https://api.deepseek.com' },
@@ -372,6 +394,7 @@ export const CommonProject = Project.create({
 								observe: (update) => {
 									const keys = [
 										'aiEnabled',
+										'aiBankFallback',
 										'aiAnswerMode',
 										'aiProviders',
 										'aiCredentialsRevision',
@@ -487,7 +510,7 @@ export const CommonProject = Project.create({
 				},
 
 				answererWrappersButton: {
-					label: '原题库配置（关闭 AI 时生效）',
+					label: '题库配置',
 					defaultValue: '点击配置',
 					attrs: {
 						type: 'button'
@@ -515,7 +538,7 @@ export const CommonProject = Project.create({
 								const current: any[] = CommonProject.scripts.settings.cfg.answererWrappers || [];
 								listContainer.replaceChildren(
 									...(current.length
-										? [createAnswererWrapperSection(current, '已解析的题库配置：', answererListHandlers)]
+										? [createAnswererWrapperSection(current, '题库顺序（题库优先时生效）', answererListHandlers)]
 										: [])
 								);
 							};
@@ -612,7 +635,12 @@ export const CommonProject = Project.create({
 										width: 600,
 										content: h('div', [
 											h('div', ['🎉 配置成功，', h('b', ' 刷新界面 '), '或者', h('b', ' 重新答题 '), '即可生效。']),
-											createAnswererWrapperSection(awsResult, '解析到的题库如下所示：', answererListHandlers, false)
+											createAnswererWrapperSection(
+												awsResult,
+												'解析到的题库如下所示：',
+												{ ...answererListHandlers, onMove: undefined },
+												false
+											)
 										]),
 										onConfirm: () => {
 											if ($gm.isInGMContext()) {
@@ -1028,9 +1056,13 @@ export const CommonProject = Project.create({
 							// 题库变更（保存/清空/一键获取回填）时重新渲染列表并自动检测延迟，弹窗关闭时注销监听
 							const awChangeListener = CommonProject.scripts.settings.onConfigChange(
 								'answererWrappers',
-								(_key, _value, remote) => {
+								(current, previous, remote) => {
 									if (remote === false) {
 										renderAnswererList();
+										const previousText = previous?.length ? JSON.stringify(previous, null, 4) : '';
+										if (textarea.value === previousText) {
+											textarea.value = current?.length ? JSON.stringify(current, null, 4) : '';
+										}
 									}
 								}
 							);
@@ -1310,8 +1342,12 @@ export const CommonProject = Project.create({
 						this.methods.ensureAIProviders();
 						// 使用 json 深拷贝，防止修改原始配置
 						const workOptions: typeof this.cfg = JSON.parse(JSON.stringify(this.cfg));
+						const banks = workOptions.answererWrappers.filter(
+							(aw) => !workOptions.disabledAnswererWrapperNames.includes(aw.name)
+						);
+						for (const bank of banks) delete bank.fallbackBanks;
 						if (workOptions.aiEnabled) {
-							workOptions.answererWrappers = createAIAnswererWrappers(
+							const ai = createAIAnswererWrappers(
 								{
 									sources: workOptions.aiProviders,
 									selection: workOptions.aiSelectedModel
@@ -1328,14 +1364,15 @@ export const CommonProject = Project.create({
 									summarySelection: workOptions.aiSummaryModel
 								}
 							);
-							return workOptions;
+							workOptions.answererWrappers = workOptions.aiBankFallback
+								? withBankFallback(
+										banks.filter((bank) => !bank.ai && !bank.aiEnsemble),
+										ai[0]
+								  )
+								: ai;
+						} else {
+							workOptions.answererWrappers = banks;
 						}
-						/**
-						 * 过滤掉被禁用的题库
-						 */
-						workOptions.answererWrappers = workOptions.answererWrappers.filter(
-							(aw) => this.cfg.disabledAnswererWrapperNames.find((daw) => daw === aw.name) === undefined
-						);
 
 						return workOptions;
 					},
@@ -1996,9 +2033,13 @@ export const CommonProject = Project.create({
 						if (images.length && !CommonProject.scripts.settings.cfg.imageOptimize) {
 							throw new Error('本题包含选区图片，请先在全局设置中开启“图片题优化”。');
 						}
-						if (images.length && wrappers.some((wrapper) => wrapper.ai && !wrapper.ai.vision)) {
-							throw new Error('当前 AI 模型未开启识图，请在模型设置中启用图片输入，并确认模型支持图片。');
-						}
+						const fallback = wrappers.length === 1 ? wrappers[0] : undefined;
+						const checkVision = () => {
+							if (images.length && wrappers.some((wrapper) => wrapper.ai && !wrapper.ai.vision)) {
+								throw new Error('当前 AI 模型未开启识图，请在模型设置中启用图片输入，并确认模型支持图片。');
+							}
+						};
+						if (!fallback?.fallbackBanks?.length) checkVision();
 						const t = Date.now();
 						const { env, imageUrls } = await buildAnswererEnv({
 							title: expandSearchImages(value, images),
@@ -2008,7 +2049,18 @@ export const CommonProject = Project.create({
 						if (images.some((image) => !imageUrls.includes(image.url))) {
 							throw new Error('部分选区图片读取失败，请重新划选或移除失败图片后再搜索。未发送不完整题目。');
 						}
-						const infos = await defaultAnswerWrapperHandler(wrappers, env);
+						const infos = fallback?.fallbackBanks?.length
+							? await searchBanksThenAI(
+									fallback.fallbackBanks,
+									(bank) => defaultAnswerWrapperHandler([bank], { ...env }, { cancelOnTimeout: true }),
+									(infos) => infos,
+									async () => {
+										if (!fallback.ai && !fallback.aiEnsemble) return unavailableBankFallback();
+										checkVision();
+										return defaultAnswerWrapperHandler(wrappers, env);
+									}
+							  )
+							: await defaultAnswerWrapperHandler(wrappers, env);
 						// 耗时计算
 						const resume = ((Date.now() - t) / 1000).toFixed(2);
 

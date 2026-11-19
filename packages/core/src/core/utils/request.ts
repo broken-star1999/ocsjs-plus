@@ -13,6 +13,8 @@ export function request<T extends 'json' | 'text'>(
 		responseType?: T;
 		headers?: Record<string, string>;
 		data?: Record<string, any>;
+		/** Abort the in-flight request when a sequential bank reaches its time limit. */
+		timeoutMs?: number;
 		/**
 		 * 状态探测场景：收到任何 HTTP 状态码都不 reject，
 		 * 统一 resolve `{ status: number, responseText: string }`（仅网络错误才 reject）。
@@ -22,6 +24,22 @@ export function request<T extends 'json' | 'text'>(
 	}
 ): Promise<T extends 'json' ? any : string> {
 	return new Promise((resolve, reject) => {
+		let abort: (() => void) | undefined;
+		const timer =
+			opts.timeoutMs === undefined
+				? undefined
+				: setTimeout(() => {
+						reject(new Error('题库请求超时，请检查网络或重试。'));
+						abort?.();
+				  }, opts.timeoutMs);
+		const complete: typeof resolve = (value) => {
+			clearTimeout(timer);
+			resolve(value);
+		};
+		const fail: typeof reject = (error) => {
+			clearTimeout(timer);
+			reject(error);
+		};
 		try {
 			/** 默认参数 */
 			const { responseType = 'json', method = 'get', type = 'fetch', data = {}, headers = {} } = opts || {};
@@ -39,7 +57,7 @@ export function request<T extends 'json' | 'text'>(
 							? JSON.stringify(data)
 							: undefined;
 					// eslint-disable-next-line no-undef
-					GM_xmlhttpRequest({
+					const pending = GM_xmlhttpRequest({
 						url,
 						method: method.toUpperCase() as 'GET' | 'HEAD' | 'POST',
 						data: requestData,
@@ -47,56 +65,68 @@ export function request<T extends 'json' | 'text'>(
 						responseType: responseType === 'json' ? 'json' : undefined,
 						onload: (response) => {
 							if (opts.anyStatus) {
-								resolve({ status: response.status, responseText: response.responseText || '' } as any);
+								complete({ status: response.status, responseText: response.responseText || '' } as any);
 								return;
 							}
 							if (response.status === 200) {
 								if (responseType === 'json') {
 									try {
-										resolve(JSON.parse(response.responseText));
+										complete(JSON.parse(response.responseText));
 									} catch (error) {
-										reject(error);
+										fail(error);
 									}
 								} else {
-									resolve(response.responseText || '');
+									complete(response.responseText || '');
 								}
 							} else {
-								reject(response.responseText);
+								fail(response.responseText);
 							}
 						},
 						onerror: (err) => {
 							console.error('GM_xmlhttpRequest error', err);
-							reject(err);
+							fail(err);
 						}
 					});
+					abort = () => pending?.abort?.();
 				} else {
-					reject(new Error('GM_xmlhttpRequest is not defined'));
+					fail(new Error('GM_xmlhttpRequest is not defined'));
 				}
 			} else {
 				const fet: typeof fetch = env === 'node' ? require('node-fetch').default : fetch;
+				const controller = opts.timeoutMs === undefined ? undefined : new AbortController();
+				if (controller) abort = () => controller.abort();
 
-				fet(url, { body: method === 'post' ? JSON.stringify(data) : undefined, method, headers })
+				fet(url, {
+					body: method === 'post' ? JSON.stringify(data) : undefined,
+					method,
+					headers,
+					signal: controller?.signal
+				})
 					.then((response) => {
 						if (opts.anyStatus) {
 							response
 								.text()
-								.then((text) => resolve({ status: response.status, responseText: text } as any))
-								.catch(reject);
+								.then((text) => complete({ status: response.status, responseText: text } as any))
+								.catch(fail);
+							return;
+						}
+						if (opts.timeoutMs !== undefined && !response.ok) {
+							fail(new Error('题库请求失败（HTTP ' + response.status + '）'));
 							return;
 						}
 						if (responseType === 'json') {
-							response.json().then(resolve).catch(reject);
+							response.json().then(complete).catch(fail);
 						} else {
 							// @ts-ignore
-							response.text().then(resolve).catch(reject);
+							response.text().then(complete).catch(fail);
 						}
 					})
 					.catch((error) => {
-						reject(new Error(error));
+						fail(new Error(error));
 					});
 			}
 		} catch (error) {
-			reject(error);
+			fail(error);
 		}
 	});
 }

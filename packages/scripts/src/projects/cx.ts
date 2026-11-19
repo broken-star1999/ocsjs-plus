@@ -12,10 +12,12 @@ import {
 	SearchInformation,
 	enableSingleQuestionRetry,
 	waitForWorkerActive,
+	WorkContext,
 	QuestionTypes
 } from '@ocsjs/core';
 import { createCXQuestionRetryAdapter } from '../utils/cx-question-retry';
 import { inspectAIWorkConfiguration } from '../utils/ai-work-status';
+import { matchBankSelections } from '../utils/bank-fallback';
 import { extractCxAIContent } from '../utils/ai-cx-mathjax';
 import { readCXQuestionTypeCode } from '../utils/cx-question-type';
 import { crackFont, collectChars, decryptElements, extractFontFromStyle, loadRefTable } from '../utils/font-decrypt';
@@ -888,6 +890,15 @@ function workOrExam(
 	/** 仅供 simplifyWorkResult 等只需文本的调用方使用 */
 	const workOrExamQuestionTitleText = (titles: (HTMLElement | undefined)[]) =>
 		workOrExamQuestionTitleTransform(titles).text;
+	const workOrExamOptions = (elements: any, ctx: WorkContext<any>, forAI: boolean) => {
+		const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown';
+		ctx.type = type as any;
+		if (type === 'completion') return '';
+		const items = (ctx.elements.options ?? [])
+			.filter((option): option is HTMLElement => !!option)
+			.map((option) => (forAI ? extractCxAIContent(option) : extractTextWithImages(option)));
+		return { text: items.map((item) => item.text).join('\n'), images: items.flatMap((item) => item.images), items };
+	};
 
 	const createAnswerer = (
 		wrappers: CommonWorkOptions['answererWrappers'],
@@ -897,24 +908,37 @@ function workOrExam(
 		createCommonAnswerer({
 			// 每次搜题前确保字体解密完成（第一题乱码防护）
 			beforeSearch: prepare,
-			titleTransform: (elements, ctx) => {
-				if (elements.title) {
-					return workOrExamQuestionTitleTransform(elements.title, forAI);
+			titleTransform: (elements) => (elements.title ? workOrExamQuestionTitleTransform(elements.title, forAI) : ''),
+			optionsTransform: (elements, ctx) => workOrExamOptions(elements, ctx, forAI),
+			bankTitleTransform: forAI
+				? (elements) => (elements.title ? workOrExamQuestionTitleTransform(elements.title) : '')
+				: undefined,
+			bankOptionsTransform: forAI ? (elements, ctx) => workOrExamOptions(elements, ctx, false) : undefined,
+			bankMatch: (ctx, infos) => {
+				const type = String(ctx.type);
+				const elements = ctx.elements;
+				if (type === 'line') {
+					const boxes = elements.lineSelectBox;
+					return matchBankSelections(
+						infos,
+						boxes?.length || 0,
+						(answer, index) =>
+							!!boxes[index] &&
+							$$el('li[data] a', boxes[index]).some((option) => option.parentElement?.getAttribute('data') === answer)
+					);
 				}
-				return '';
-			},
-			optionsTransform: (elements, ctx) => {
-				const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown';
-				ctx.type = type as any;
-				if (type === 'completion') return '';
-				const optResults = (ctx.elements.options ?? [])
-					.filter(Boolean)
-					.map((o: any) => (forAI ? extractCxAIContent(o) : extractTextWithImages(o)));
-				return {
-					text: optResults.map((r) => r.text).join('\n'),
-					images: optResults.flatMap((r) => r.images),
-					items: optResults
-				};
+				if (type === 'fill' || type === 'reader') {
+					const questions = type === 'fill' ? elements.filling : elements.reading;
+					return matchBankSelections(
+						infos,
+						questions?.length || 0,
+						(answer, index) =>
+							!!questions[index] &&
+							$$el('span.saveSingleSelect[data]', questions[index]).some(
+								(option) => option.getAttribute('data') === answer
+							)
+					);
+				}
 			},
 			answererWrappers: wrappers,
 			period
@@ -2158,6 +2182,18 @@ const JobRunner = {
 			/** 默认搜题方法构造器 */
 			answerer: createCommonAnswerer({
 				titleTransform: (elements, ctx) => chapterTestTaskQuestionTitleTransform(elements.title),
+				bankMatch: (ctx, infos) => {
+					if (String(ctx.type) !== 'line') return;
+					const boxes = ctx.elements.lineSelectBox;
+					return matchBankSelections(
+						infos,
+						boxes?.length || 0,
+						(answer, index) =>
+							!!boxes[index] &&
+							$$el('option[value]', boxes[index]).some((option) => option.getAttribute('value') === answer),
+						true
+					);
+				},
 				optionsTransform: (elements, ctx) => {
 					const type = getQuestionType(readCXQuestionTypeCode(elements.type as HTMLInputElement[])) || 'unknown';
 					ctx.type = type as any;

@@ -3285,6 +3285,12 @@ function fusioncourseWork(
 					? { text, images: items.flatMap((item: { images: string[] }) => item.images), items }
 					: text;
 			},
+			bankOptionsTransform: (elements) =>
+				(elements.options ?? [])
+					.filter(Boolean)
+					.map((option: HTMLElement) => extractTextWithImages(option).text.replace(/\s+/g, ' ').trim())
+					.join('\n'),
+			bankOptionText: (option) => extractTextWithImages(option).text.replace(/\s+/g, ' ').trim(),
 			answererWrappers,
 			period
 		}),
@@ -3534,6 +3540,12 @@ function hikeHomework(
 					? { text, images: items.flatMap((item: { images: string[] }) => item.images), items }
 					: text;
 			},
+			bankOptionsTransform: (elements) =>
+				(elements.options ?? [])
+					.filter(Boolean)
+					.map((option: HTMLElement) => extractTextWithImages(option).text.replace(/\s+/g, ' ').trim())
+					.join('\n'),
+			bankOptionText: (option) => extractTextWithImages(option).text.replace(/\s+/g, ' ').trim(),
 			answererWrappers,
 			period
 		}),

@@ -8,6 +8,7 @@ import {
 	updateDynamicResult
 } from '../utils/work';
 import { playbackRate, restudy, volume } from '../utils/configs';
+import { matchBankSelections } from '../utils/bank-fallback';
 import { CommonWorkOptions, playMedia } from '../utils';
 import { createSteps } from '../utils/ui';
 import { CommonProject } from './common';
@@ -830,6 +831,18 @@ function work({ answererWrappers, period, thread, answerSeparators }: CommonWork
 		/** 默认搜题方法构造器 */
 		answerer: createCommonAnswerer({
 			titleTransform: (elements: any, _ctx: any) => titleTransformWithImages(elements.title),
+			bankMatch: (ctx, infos) => {
+				if (String(ctx.type) !== 'fill-blank') return;
+				const inputs = (ctx.elements.options || []).flatMap((option) =>
+					Array.from(option?.querySelectorAll<HTMLInputElement>('.fillblank_input input') || [])
+				);
+				return matchBankSelections(
+					infos,
+					inputs.length,
+					(_answer, index) => !inputs[index].disabled && !inputs[index].readOnly,
+					true
+				);
+			},
 			optionsTransform: (elements: any, ctx: any) => {
 				const type = getType(ctx.elements.options) || 'unknown';
 				ctx.type = type;
