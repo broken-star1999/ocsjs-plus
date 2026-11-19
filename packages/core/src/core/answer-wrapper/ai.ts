@@ -125,12 +125,15 @@ async function requestAIJSON(
 	const key = requiresKey ? readAIKey(endpoint, sourceId) : '';
 	if (requiresKey && !key) throw new Error('尚未填写 API Key，本次未请求 AI。请保存密钥或选择“无需 API Key”。');
 	if (typeof GM_xmlhttpRequest === 'undefined') throw new Error('AI 请求需要脚本猫或 Tampermonkey');
-	return new Promise((resolve, reject) => {
-		GM_xmlhttpRequest({
+	const timeout = Math.max(1000, Math.min(timeoutMs, 180_000));
+	const timeoutMessage = 'AI 请求超时，请重试或调整搜题最大耗时';
+	let handle: ReturnType<typeof GM_xmlhttpRequest> | undefined;
+	const request = new Promise((resolve, reject) => {
+		handle = GM_xmlhttpRequest({
 			url,
 			method: body ? 'POST' : 'GET',
 			anonymous: true,
-			timeout: Math.max(1000, Math.min(timeoutMs, 180_000)),
+			timeout,
 			headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: 'Bearer ' + key } : {}) },
 			...(body ? { data: JSON.stringify(body) } : {}),
 			onload: (res) => {
@@ -153,10 +156,23 @@ async function requestAIJSON(
 				}
 			},
 			onerror: () => reject(new Error('AI 网络请求失败，请检查网络与脚本管理器的域名授权')),
-			ontimeout: () => reject(new Error('AI 请求超时，请重试或调整搜题最大耗时')),
+			ontimeout: () => reject(new Error(timeoutMessage)),
 			onabort: () => reject(new Error('AI 请求已取消'))
 		});
 	});
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<never>((_, reject) => {
+		// Some managers can leave a stalled request without a timeout callback.
+		timer = setTimeout(() => {
+			reject(new Error(timeoutMessage));
+			try {
+				handle?.abort?.();
+			} catch {
+				// The timeout is already reported even if the manager cannot abort.
+			}
+		}, timeout);
+	});
+	return Promise.race([request, deadline]).finally(() => clearTimeout(timer));
 }
 
 export async function listAIModels(endpoint: string, sourceId?: string, authMode?: AIAuthMode): Promise<AIModel[]> {
