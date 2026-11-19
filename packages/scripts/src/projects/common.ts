@@ -1509,7 +1509,7 @@ export const CommonProject = Project.create({
 				notes: {
 					defaultValue: $ui.notes([
 						'点击题目序号查看答案、决策依据和调用进度。',
-							'待人工题可查看候选并定位原题。确认处理或跳过后，本题会结束等待。'
+						'待人工题可查看候选并定位原题。确认处理或跳过后，本题会结束等待。'
 					]).outerHTML
 				},
 				currentResultIndex: {

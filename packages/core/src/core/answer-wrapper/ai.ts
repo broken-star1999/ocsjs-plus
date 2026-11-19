@@ -161,7 +161,7 @@ async function requestAIJSON(
 		});
 	});
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	const deadline = new Promise<never>((_, reject) => {
+	const deadline = new Promise<never>((resolve, reject) => {
 		// Some managers can leave a stalled request without a timeout callback.
 		timer = setTimeout(() => {
 			reject(new Error(timeoutMessage));
