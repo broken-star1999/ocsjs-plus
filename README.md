@@ -79,7 +79,7 @@ OCS Plus 保留 [OCS](https://github.com/ocsjs/ocsjs) 的课程平台适配和�
 1. **安装脚本管理器**：Tampermonkey（油猴）或脚本猫。
 2. **安装 OCS Plus**：[点击安装最新正式版](https://github.com/broken-star1999/ocsjs-plus/releases/latest/download/ocs.user.js)。安装文件为 `ocs.user.js`。
 3. **配置提供商**：进入 **通用 → 全局设置 → 管理提供商与模型**，填写接口、获取并添加模型。
-4. **选择作答方式**：开启 **使用 AI 替代题库**，选择普通模式模型，或打开 **高级模式设置**。
+4. **选择作答方式**：开启 **使用 AI 答题**，选择普通模式模型，或打开 **高级模式设置**。已有题库的用户可启用 **题库优先，AI 兜底**。
 
 完整配置、图片输入条件、主客观题规则和重做范围见 [使用指南](docs/usage.md)。
 

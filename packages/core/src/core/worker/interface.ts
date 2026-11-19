@@ -57,9 +57,15 @@ export interface ResolverResult {
 	finish: boolean;
 }
 
+export type ReviewControl = (() => Promise<void>) & {
+	complete?: () => void;
+	pending?: () => boolean;
+	skip?: () => Promise<void>;
+};
+
 /** 答题结果 */
 export interface WorkResult<E extends RawElements> {
-	confirmReview?: (() => Promise<void>) & { complete?: () => void; pending?: () => boolean };
+	confirmReview?: ReviewControl;
 	/** Explicitly adopt a current model candidate through the platform's validated replacement adapter. */
 	applyReviewAnswer?: (answers: string[]) => Promise<void>;
 	/** Scroll to the live question in its owning frame. */
@@ -67,6 +73,8 @@ export interface WorkResult<E extends RawElements> {
 	/** 仅在当前页面内有效，不可直接序列化。由已适配的平台提供。 */
 	retry?: () => Promise<void>;
 	retrying?: boolean;
+	skip?: (() => Promise<void>) & { inProgress?: () => boolean };
+	skipped?: boolean;
 	/** 查题完毕 */
 	requested: boolean;
 	/** 正在搜题中（查题线程已启动但尚未返回，供结果面板显示等待动画） */
@@ -85,7 +93,10 @@ export interface WorkResult<E extends RawElements> {
  */
 export interface SimplifyWorkResult {
 	/** Local callback, removed by the scripts layer before storing results. */
-	_confirmReview?: () => Promise<void>;
+	_confirmReview?: ReviewControl;
+	_skip?: () => Promise<void>;
+	skipControl?: { id: string; frame: string };
+	skipped?: boolean;
 	reviewControl?: { id: string; frame: string };
 	reviewActions?: {
 		adopt?: { id: string; frame: string };
@@ -139,6 +150,11 @@ export type QuestionResolver<E> = (
 	) => void | Promise<void>
 ) => Promise<ResolverResult>;
 
+export interface AnswerFill {
+	answer: string;
+	option: HTMLElement;
+}
+
 /**
  * 使用默认工作器
  *
@@ -153,6 +169,8 @@ export interface DefaultWork<E extends RawElements> {
 	 * 不传则回退到 `o.innerText`。
 	 */
 	optionText?: (el: HTMLElement, i: number) => string;
+	/** Verify the final page state before the worker records a successful result. Throw on failure. */
+	verifyFilled?: (ctx: WorkContext<E>, fills: readonly AnswerFill[]) => void | Promise<void>;
 	/**
      * 处理器， 每个题目的处理器， 实例可看默认的 zhs `作业脚本` 写法 : https://github.com/ocsjs/ocsjs/blob/3.0/packages/scripts/src/browser/zhs/work.ts
      *

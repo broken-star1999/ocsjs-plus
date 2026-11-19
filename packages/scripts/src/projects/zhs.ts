@@ -32,6 +32,7 @@ import { $console, BackgroundProject } from './background';
 import { waitForMedia, waitForElement, waitFor } from '../utils/study';
 import { $playwright } from '../utils/app';
 import { $render } from '../utils/render';
+import { createZhsAnswerFill, zhsExamText, zhsFormText, zhsTrainingText } from '../utils/zhs-answer-fill';
 
 const state = {
 	study: {
@@ -2645,6 +2646,21 @@ function getPopupCaptcha() {
 	return document.querySelector('.yidun_popup');
 }
 
+function countUnfinishedZhsQuestions(results: readonly { result?: { finish: boolean } }[]) {
+	return results.filter(({ result }) => !result?.finish).length;
+}
+
+function announceZhsWorkEnd(unfinished: number, duration: number) {
+	if (unfinished > 0) {
+		$message.warn({
+			content: `本次处理结束，${unfinished} 道题尚未确认填写。请点击结果题号定位原题核对。`,
+			duration: 0
+		});
+	} else {
+		$message.info({ content: '作业/考试完成，请自行检查后保存或提交。', duration });
+	}
+}
+
 /**
  * 共享课的作业和考试
  */
@@ -2736,21 +2752,7 @@ function gxkWorkAndExam(
 					return undefined;
 				}
 			},
-			/** 自定义处理器 */
-			async handler(type, answer, option) {
-				if (type === 'judgement' || type === 'single' || type === 'multiple') {
-					if (!option.querySelector('input')?.checked) {
-						option.click();
-						await $.sleep(200);
-					}
-				} else if (type === 'completion' && answer.trim()) {
-					const text = option.querySelector('textarea');
-					if (text) {
-						text.value = answer;
-						await $.sleep(200);
-					}
-				}
-			}
+			...createZhsAnswerFill('native', undefined, zhsFormText('textarea'))
 		},
 		/** 元素准备完毕后回调（仅一次）：填充全部题目，面板立即显示全部题目 */
 		async onResultsInit(_curr, _index, res) {
@@ -2777,7 +2779,16 @@ function gxkWorkAndExam(
 			if (worker.isClose === true) {
 				return;
 			}
-			$message.success({ content: `答题完成，将等待 ${stopSecondWhenFinish} 秒后进行保存或提交。` });
+			const finished = res.flatMap(({ result }, index) => (result?.finish ? [index] : []));
+			const unfinished = res.length - finished.length;
+			if (!finished.length) {
+				announceZhsWorkEnd(unfinished, 0);
+				worker.emit('done');
+				return;
+			}
+			$message.info({
+				content: `本次处理结束，${stopSecondWhenFinish} 秒后保存已填写或确认的 ${finished.length} 道题。`
+			});
 			await $.sleep(stopSecondWhenFinish * 1000);
 			// @ts-ignore
 			if (worker.isClose === true) {
@@ -2786,14 +2797,14 @@ function gxkWorkAndExam(
 			/**
 			 * 保存题目，不在选择答案后保存的原因是，如果答题线程大于3会导致题目错乱，因为 resolverIndex 并不是顺序递增的
 			 */
-			for (let index = 0; index < worker.totalQuestionCount; index++) {
+			for (const [saved, index] of finished.entries()) {
 				// @ts-ignore
 				if (worker.isClose === true) {
 					return;
 				}
 				const modal = $modal.alert({
 					title: '⚠️提示',
-					content: `正在自动保存题目中，不然填写的答案将无效，<br>当前进度 ${index}/${worker.totalQuestionCount}<br>保存完毕前请勿操作...`,
+					content: `正在自动保存已填写或确认的题目。<br>当前进度 ${saved}/${finished.length}<br>保存完毕前请勿操作。`,
 					confirmButton: null,
 					maskCloseable: false
 				});
@@ -2811,7 +2822,7 @@ function gxkWorkAndExam(
 				}
 				modal?.remove();
 			}
-			$message.info({ content: '作业/考试完成，请自行检查后保存或提交。', duration: 0 });
+			announceZhsWorkEnd(unfinished, 0);
 			worker.emit('done');
 		})
 		.catch((err) => {
@@ -2866,28 +2877,7 @@ function xnkWork({ answererWrappers, period, thread, answerSeparators }: CommonW
 					? 'completion'
 					: undefined;
 			},
-			/** 自定义处理器 */
-			async handler(type, answer, option, ctx) {
-				if (type === 'judgement' || type === 'single' || type === 'multiple') {
-					if (option.querySelector('input')?.checked === false) {
-						option.click();
-						await $.sleep(200);
-					}
-				} else if (type === 'completion' && answer.trim()) {
-					const text =
-						option.tagName === 'TEXTAREA' ? (option as HTMLTextAreaElement) : option.querySelector('textarea');
-					if (text) {
-						text.focus();
-						await $.sleep(100);
-						text.value = answer;
-						await $.sleep(100);
-						text.dispatchEvent(new Event('input', { bubbles: true }));
-						await $.sleep(100);
-						text.blur();
-						await $.sleep(100);
-					}
-				}
-			}
+			...createZhsAnswerFill('native', undefined, zhsFormText('textarea'))
 		},
 
 		/**
@@ -2900,23 +2890,27 @@ function xnkWork({ answererWrappers, period, thread, answerSeparators }: CommonW
 		},
 		onResultsUpdate(current, _, res) {
 			// 逐题更新搜索结果面板（等待搜索中→等待答题中→已答题/失败）
-			updateDynamicResult(current, titleTransform);
+			return updateDynamicResult(current, titleTransform);
 		}
 	});
 
 	const getBtn = () => document.querySelector('span.Topicswitchingbtn:nth-child(2)') as HTMLElement;
-	let next = getBtn();
 
 	(async () => {
-		while (next && worker.isClose === false) {
-			await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
+		let unfinished = 0;
+		while (worker.isClose === false) {
+			const results = await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
+			if (worker.isClose) return;
+			unfinished += countUnfinishedZhsQuestions(results);
 			await $.sleep(1000);
-			next = getBtn();
-			next?.click();
+			const next = getBtn();
+			if (!next || worker.isClose) break;
+			next.click();
 			await $.sleep(1000);
 		}
 
-		$message.info({ content: '作业/考试完成，请自行检查后保存或提交。', duration: 0 });
+		if (worker.isClose) return;
+		announceZhsWorkEnd(unfinished, 0);
 		worker.emit('done');
 		// 答题完成后，题库选项点击才会同步题目，否则会导致题目错乱
 		CommonProject.scripts.workResults.cfg.questionPositionSyncHandlerType = 'zhs-xnk';
@@ -2989,35 +2983,7 @@ function smartWork(
 					return undefined;
 				}
 			},
-			/** 自定义处理器 */
-			async handler(type, answer, option, ctx) {
-				if (type === 'judgement' || type === 'single' || type === 'multiple') {
-					const opt = option.querySelector<HTMLElement>(
-						'.el-checkbox__input:not(.is-checked),i.iconfont:not(.checkedIcon)'
-					);
-
-					if (opt) {
-						if (remotePage) {
-							await remotePage.click(opt);
-						} else {
-							opt.click();
-						}
-						await $.sleep(200);
-					}
-				} else if (type === 'completion') {
-					const opt = option.querySelector<HTMLInputElement>('input');
-					if (opt && answer.trim()) {
-						if (remotePage) {
-							await remotePage.click(opt);
-							opt.value = '';
-							await remotePage['keyboard.type'](answer, { delay: Math.floor(Math.random() * 100) });
-						} else {
-							opt.value = answer;
-						}
-						await $.sleep(200);
-					}
-				}
-			}
+			...createZhsAnswerFill('icon', remotePage, zhsFormText('input', remotePage))
 		},
 		/**
 		 * 作业都是一题一题做的，不像其他自动答题一样可以获取全部试卷内容。
@@ -3029,7 +2995,7 @@ function smartWork(
 		},
 		onResultsUpdate(current, _, res) {
 			// 逐题更新搜索结果面板（等待搜索中→等待答题中→已答题/失败）
-			updateDynamicResult(current, titleTransform);
+			return updateDynamicResult(current, titleTransform);
 		}
 	});
 
@@ -3045,8 +3011,11 @@ function smartWork(
 			await $.sleep(3000);
 		}
 		let count = 0;
+		let unfinished = 0;
 		while (worker.isClose === false) {
-			await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
+			const results = await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
+			if (worker.isClose) return;
+			unfinished += countUnfinishedZhsQuestions(results);
 			next = getNextBtn();
 			if (!next) {
 				break;
@@ -3060,12 +3029,7 @@ function smartWork(
 			count++;
 		}
 
-		$message.info({
-			content: '作业/考试完成，请自行检查后保存或提交。',
-			duration:
-				// 题目过多则不自动关闭
-				count > 10 ? 0 : 30
-		});
+		announceZhsWorkEnd(unfinished, count > 10 ? 0 : 30);
 		worker.emit('done');
 		// 答题完成后，题库选项点击才会同步题目，否则会导致题目错乱
 		CommonProject.scripts.workResults.cfg.questionPositionSyncHandlerType = 'zhs-smart';
@@ -3135,35 +3099,7 @@ function smartExam(
 					return undefined;
 				}
 			},
-			/** 自定义处理器 */
-			async handler(type, answer, option, ctx) {
-				if (type === 'judgement' || type === 'single' || type === 'multiple') {
-					// mainBg 为已经选择的选项的背景色，未选择的选项没有这个类
-					if (option.querySelector<HTMLElement>('div.bg-mainBg') === null) {
-						if (remotePage) {
-							await remotePage.click(option);
-						} else {
-							option.click();
-						}
-						await $.sleep(200);
-					}
-				} else if (type === 'completion') {
-					// 简答
-					if (option.classList.contains('real-editor')) {
-						// @ts-ignore
-						option.ckeditorInstance.data.set(answer);
-					} else {
-						const input = option.querySelector<HTMLInputElement>('input');
-						if (input) {
-							input.value = answer;
-							Reflect.set(input, 'composition', true);
-							input.dispatchEvent(new Event('input', { bubbles: true }));
-						}
-					}
-
-					await $.sleep(200);
-				}
-			}
+			...createZhsAnswerFill('component', remotePage, zhsExamText)
 		},
 		/**
 		 * 作业都是一题一题做的，不像其他自动答题一样可以获取全部试卷内容。
@@ -3175,13 +3111,13 @@ function smartExam(
 		},
 		onResultsUpdate(current, _, res) {
 			// 逐题更新搜索结果面板（等待搜索中→等待答题中→已答题/失败）
-			updateDynamicResult(current, titleTransform);
+			return updateDynamicResult(current, titleTransform);
 		}
 	});
 
 	const getNextBtn = () =>
-		Array.from(document.querySelectorAll('button')).find((btn) =>
-			btn.textContent?.includes('下一题')
+		Array.from(document.querySelectorAll('button')).find(
+			(btn) => !btn.disabled && btn.textContent?.includes('下一题')
 		) as HTMLElement | null;
 	let next = null as HTMLElement | null;
 
@@ -3194,8 +3130,11 @@ function smartExam(
 			await $.sleep(3000);
 		}
 		let count = 0;
+		let unfinished = 0;
 		while (worker.isClose === false) {
-			await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
+			const results = await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
+			if (worker.isClose) return;
+			unfinished += countUnfinishedZhsQuestions(results);
 			next = getNextBtn();
 			if (!next) {
 				break;
@@ -3209,15 +3148,10 @@ function smartExam(
 			count++;
 		}
 
-		$message.info({
-			content: '作业/考试完成，请自行检查后保存或提交。',
-			duration:
-				// 题目过多则不自动关闭
-				count > 10 ? 0 : 30
-		});
+		announceZhsWorkEnd(unfinished, count > 10 ? 0 : 30);
 		worker.emit('done');
 		// 答题完成后，题库选项点击才会同步题目，否则会导致题目错乱
-		CommonProject.scripts.workResults.cfg.questionPositionSyncHandlerType = 'zhs-smart';
+		CommonProject.scripts.workResults.cfg.questionPositionSyncHandlerType = 'zhs-smart-exam';
 	})();
 	dynamicWorkTips(worker);
 	return worker;
@@ -3285,6 +3219,12 @@ function fusioncourseWork(
 					? { text, images: items.flatMap((item: { images: string[] }) => item.images), items }
 					: text;
 			},
+			bankOptionsTransform: (elements) =>
+				(elements.options ?? [])
+					.filter(Boolean)
+					.map((option: HTMLElement) => extractTextWithImages(option).text.replace(/\s+/g, ' ').trim())
+					.join('\n'),
+			bankOptionText: (option) => extractTextWithImages(option).text.replace(/\s+/g, ' ').trim(),
 			answererWrappers,
 			period
 		}),
@@ -3305,23 +3245,7 @@ function fusioncourseWork(
 					return undefined;
 				}
 			},
-			/** 自定义处理器 */
-			async handler(type, answer, option, ctx) {
-				if (type === 'judgement' || type === 'single' || type === 'multiple') {
-					const opt = option.querySelector<HTMLElement>(
-						'.el-checkbox__input:not(.is-checked),.el-radio__input:not(.is-checked)'
-					);
-
-					if (opt) {
-						if (remotePage) {
-							await remotePage.click(opt);
-						} else {
-							opt.click();
-						}
-						await $.sleep(200);
-					}
-				}
-			}
+			...createZhsAnswerFill('element', remotePage, zhsFormText('textarea,input[type="text"],input:not([type])'))
 		},
 
 		/** 元素准备完毕后回调（仅一次）：填充全部题目，面板立即显示全部题目 */
@@ -3344,16 +3268,7 @@ function fusioncourseWork(
 				return;
 			}
 
-			// @ts-ignore
-			if (worker.isClose === true) {
-				return;
-			}
-
-			$message.info({
-				content: '作业/考试完成，请自行检查后保存或提交。',
-				// 题目过多则不自动关闭
-				duration: res.length > 10 ? 0 : 30
-			});
+			announceZhsWorkEnd(countUnfinishedZhsQuestions(res), res.length > 10 ? 0 : 30);
 			worker.emit('done');
 		})
 		.catch((err) => {
@@ -3412,23 +3327,7 @@ function hikeWork(
 					return undefined;
 				}
 			},
-			/** 自定义处理器 */
-			async handler(type, answer, option, ctx) {
-				if (type === 'judgement' || type === 'single' || type === 'multiple') {
-					const opt = option.querySelector<HTMLElement>(
-						'.el-checkbox__input:not(.is-checked),.el-radio__input:not(.is-checked)'
-					);
-
-					if (opt) {
-						if (remotePage) {
-							await remotePage.click(opt);
-						} else {
-							opt.click();
-						}
-						await $.sleep(200);
-					}
-				}
-			}
+			...createZhsAnswerFill('element', remotePage, zhsFormText('textarea,input[type="text"],input:not([type])'))
 		},
 
 		/**
@@ -3441,15 +3340,15 @@ function hikeWork(
 		},
 		onResultsUpdate(current, _, res) {
 			// 逐题更新搜索结果面板（等待搜索中→等待答题中→已答题/失败）
-			updateDynamicResult(current, titleTransform);
+			return updateDynamicResult(current, titleTransform);
 		}
 	});
 
 	const getNextBtn = () => document.querySelector<HTMLElement>('.check_btn:not(.is-disabled)');
-	let next = getNextBtn();
 	let count = 0;
 
 	(async () => {
+		let unfinished = 0;
 		// 从第一题开始
 		const first = document.querySelector<HTMLElement>('.card_ul .card_li');
 		if (first) {
@@ -3458,20 +3357,23 @@ function hikeWork(
 			await $.sleep(3000);
 		}
 
-		while (next && worker.isClose === false) {
-			await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
-			next = getNextBtn();
-			if (next) {
-				await $.sleep(1000);
-				if (remotePage) await remotePage.click(next);
-				else next.click();
-				// 等待题目加载
-				await $.sleep(1000);
-				count++;
-			}
+		while (worker.isClose === false) {
+			const results = await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
+			if (worker.isClose) return;
+			unfinished += countUnfinishedZhsQuestions(results);
+			const next = getNextBtn();
+			if (!next) break;
+			await $.sleep(1000);
+			if (worker.isClose) return;
+			if (remotePage) await remotePage.click(next);
+			else next.click();
+			// 等待题目加载
+			await $.sleep(1000);
+			count++;
 		}
 
-		$message.info({ content: '作业/考试完成，请自行检查后保存或提交。', duration: count > 10 ? 0 : 30 });
+		if (worker.isClose) return;
+		announceZhsWorkEnd(unfinished, count > 10 ? 0 : 30);
 		worker.emit('done');
 		// 答题完成后，题库选项点击才会同步题目，否则会导致题目错乱
 		CommonProject.scripts.workResults.cfg.questionPositionSyncHandlerType = 'zhs-hike';
@@ -3534,6 +3436,12 @@ function hikeHomework(
 					? { text, images: items.flatMap((item: { images: string[] }) => item.images), items }
 					: text;
 			},
+			bankOptionsTransform: (elements) =>
+				(elements.options ?? [])
+					.filter(Boolean)
+					.map((option: HTMLElement) => extractTextWithImages(option).text.replace(/\s+/g, ' ').trim())
+					.join('\n'),
+			bankOptionText: (option) => extractTextWithImages(option).text.replace(/\s+/g, ' ').trim(),
 			answererWrappers,
 			period
 		}),
@@ -3554,20 +3462,7 @@ function hikeHomework(
 					return undefined;
 				}
 			},
-			/** 自定义处理器 */
-			async handler(type, answer, option, ctx) {
-				if (type === 'judgement' || type === 'single' || type === 'multiple') {
-					if (remotePage) {
-						await remotePage.click(option);
-					} else {
-						option.click();
-					}
-					await $.sleep(200);
-				} else if (type === 'completion') {
-					const textarea = option.querySelector('.vditor-reset');
-					if (textarea) textarea.innerHTML = `<p data-block="0">${answer.trim()}</p>`;
-				}
-			}
+			...createZhsAnswerFill('training', remotePage, zhsTrainingText)
 		},
 
 		/** 元素准备完毕后回调（仅一次）：填充全部题目，面板立即显示全部题目 */
@@ -3578,15 +3473,21 @@ function hikeHomework(
 		},
 		/** 完成答题后 */
 		async onResultsUpdate(current, index, res) {
+			const root = current.ctx?.root;
+			if (root) {
+				current.locateQuestion = async () => {
+					if (!root.isConnected) throw new Error('原题已从当前页面移除。');
+					root.scrollIntoView({ behavior: 'smooth', block: 'center' });
+				};
+			}
 			await CommonProject.scripts.workResults.methods.update(index, simplifyWorkResult(current, titleTransform, index));
 		}
 	});
 
-	worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug }).then(() => {
-		$message.info({ content: '作业/考试完成，请自行检查后保存或提交。', duration: 0 });
+	worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug }).then((res) => {
+		if (worker.isClose) return;
+		announceZhsWorkEnd(countUnfinishedZhsQuestions(res), 0);
 		worker.emit('done');
-		// 答题完成后，题库选项点击才会同步题目，否则会导致题目错乱
-		CommonProject.scripts.workResults.cfg.questionPositionSyncHandlerType = 'zhs-hike';
 	});
 
 	return worker;

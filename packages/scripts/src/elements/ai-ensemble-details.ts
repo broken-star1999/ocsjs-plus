@@ -63,6 +63,8 @@ export function createAIEnsembleSummary(ensemble: AIEnsembleResult, type?: strin
 			? '已采用指定的主观题回答'
 			: ensemble.status === 'confirmed'
 			? '已人工处理'
+			: ensemble.status === 'skipped'
+			? '已跳过'
 			: '待人工评判 · 不自动填写';
 	const root = h(
 		'section',

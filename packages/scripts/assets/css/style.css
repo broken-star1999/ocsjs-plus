@@ -1656,6 +1656,10 @@ container-element.normal > .footer {
     box-shadow: 0 0 1px 0px rgba(43, 103, 255, 0.2);
   }
 }
+.search-infos-num.skipped {
+  border: 1px dashed #868e96;
+  color: #495057;
+}
 .search-infos-num.active {
   background-color: #2b67ff !important;
   color: white;

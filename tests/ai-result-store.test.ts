@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { $store } from 'easy-us';
+import { $store, cors } from 'easy-us';
 import { CommonEvents, CommonProject } from '../packages/scripts/src/projects/common';
+import { requestReviewAction } from '../packages/scripts/src/utils/question-retry-control';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -23,6 +24,7 @@ async function main() {
 	const originalGet = $store.getTab;
 	const originalSet = $store.setTab;
 	const originalEmit = CommonEvents.emitWorkerChanged;
+	const originalOn = cors.on;
 	let stored: any[] = [];
 	let fail = false;
 	($store as any).getTab = async () => {
@@ -39,6 +41,7 @@ async function main() {
 		stored = copy(next);
 	};
 	(CommonEvents as any).emitWorkerChanged = () => {};
+	cors.on = async () => 0;
 	const methods = CommonProject.scripts.workResults.methods;
 	try {
 		await Promise.all([methods.update(0, result('第一题', 1)), methods.update(1, result('第二题', 2))]);
@@ -74,11 +77,35 @@ async function main() {
 		assert.ok(stored.find((row) => row.question === '动态第二题'));
 		checks++;
 		console.log('PASS dynamic question appends preserve concurrent reports');
+
+		let skipped = 0;
+		const failed = {
+			question: '可跳过的题',
+			type: 'single' as const,
+			requested: true,
+			resolved: true,
+			finish: false,
+			searchInfos: [],
+			_skip: async () => {
+				skipped++;
+			}
+		};
+		await methods.fillAll([failed]);
+		const action = stored[0].skipControl;
+		assert.equal(stored[0]._skip, undefined);
+		await requestReviewAction(action);
+		assert.equal(skipped, 1);
+		await methods.clearResults();
+		await assert.rejects(requestReviewAction(action), /跳过入口已失效/);
+		assert.equal(skipped, 1);
+		checks++;
+		console.log('PASS serialized skip controls expire when a work-result list is cleared');
 		console.log(`AI result storage: ${checks} scenarios passed.`);
 	} finally {
 		$store.getTab = originalGet;
 		$store.setTab = originalSet;
 		CommonEvents.emitWorkerChanged = originalEmit;
+		cors.on = originalOn;
 	}
 }
 main().catch((error) => {

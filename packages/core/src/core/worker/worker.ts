@@ -1,8 +1,10 @@
 import { $, $message, CommonEventEmitter } from 'easy-us';
 import { domSearchAll } from '../utils/dom';
 import {
+	AnswerFill,
 	CustomWorkOptions,
 	RawElements,
+	ReviewControl,
 	ResolverResult,
 	SimplifyWorkResult,
 	WorkContext,
@@ -16,6 +18,47 @@ import { defaultWorkTypeResolver } from './utils';
 import { AnswerWrapperHandlerConfig, SearchInformation } from '../answer-wrapper';
 import { needsAIReview, requireAIReview } from '../answer-wrapper/ai-ensemble';
 import { AIReviewQueue } from './ai-review-queue';
+
+const latestQuestionResults = new WeakMap<HTMLElement, object>();
+
+/** Expose skip only for a settled, unanswered result and serialize it with review and retry. */
+function createSkipAction(
+	result: Pick<WorkResult<RawElements>, 'requested' | 'resolved' | 'searching' | 'retrying' | 'skipped'>,
+	options: {
+		validate: () => void;
+		finished: () => boolean | undefined;
+		review: () => ReviewControl | undefined;
+		update: () => void | Promise<void>;
+	}
+) {
+	let skipping = false;
+	const skip = async () => {
+		options.validate();
+		if (skipping || result.retrying || result.searching || !result.requested || !result.resolved) {
+			throw new Error('本题仍在处理，请等待后再操作。');
+		}
+		if (result.skipped || options.finished()) throw new Error('本题已跳过或已完成。');
+		skipping = true;
+		try {
+			const review = options.review();
+			if (review?.skip) {
+				await review.skip();
+			} else {
+				const previous = result.skipped;
+				result.skipped = true;
+				try {
+					await options.update();
+				} catch (error) {
+					result.skipped = previous;
+					throw error;
+				}
+			}
+		} finally {
+			skipping = false;
+		}
+	};
+	return Object.assign(skip, { inProgress: () => skipping });
+}
 
 /**
  * 自动答题器， 传入一些指定的配置， 就可以进行自动答题。
@@ -172,7 +215,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 						: this.opts.work.type(ctx);
 			}
 
-			results.push({
+			const result: WorkResult<E> = {
 				requested: false,
 				resolved: false,
 				ctx: ctx,
@@ -180,7 +223,9 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 					if (this.isClose || !questionRoot.isConnected) throw new Error('原题已失效，请返回题目并重新开始。');
 					questionRoot.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
 				}
-			});
+			};
+			latestQuestionResults.set(questionRoot, result);
+			results.push(result);
 			// 题目检测钩子：早于搜题，供结果面板提前展示"等待搜索中"占位
 			await this.opts.onQuestionDetected?.(results[results.length - 1], results);
 		}
@@ -349,15 +394,27 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 								/** 使用默认处理器 */
 
 								if (result.ctx.type) {
+									const work = this.opts.work;
 									const resolver = createDefaultQuestionResolver(
 										result.ctx,
 										// @ts-ignore work.optionText 跨 E 类型透传
-										this.opts.work.optionText
+										work.optionText
 									)[result.ctx.type];
-									const handler = this.opts.work.handler;
-									res = await resolver(result.ctx.searchInfos, result.ctx.elements.options as HTMLElement[], handler);
+									const fills: AnswerFill[] = [];
+									const resolved = await resolver(
+										result.ctx.searchInfos,
+										result.ctx.elements.options as HTMLElement[],
+										work.verifyFilled
+											? async (type, answer, option, ctx) => {
+													await work.handler(type, answer, option, ctx);
+													fills.push({ answer, option });
+											  }
+											: work.handler
+									);
+									if (resolved.finish) await work.verifyFilled?.(result.ctx, fills);
+									res = resolved;
 								} else {
-									error = '题目类型解析失败, 请自行提供解析器, 或者忽略此题。';
+									error = '无法识别题型。你可以在结果中跳过本题。';
 								}
 							} else {
 								error = 'elements.options 为空 ! 使用默认处理器, 必须提供题目选项的选择器。';
@@ -368,7 +425,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 							res = await work(result.ctx);
 						}
 					} else {
-						error = result.error || '搜索不到答案, 请重新运行, 或者忽略此题。';
+						error = result.error || '没有搜到答案。你可以在结果中跳过本题。';
 					}
 				} catch (err) {
 					error = (err as any)?.message || err;
@@ -383,18 +440,30 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 				result.resolved = true;
 				if (result.ctx?.searchInfos.some((info) => info.ensemble) && !res?.finish) {
 					if (!needsAIReview(result.ctx.searchInfos)) {
-						requireAIReview(result.ctx.searchInfos, '模型答案一致，但无法匹配页面选项或空位，等待人工评判。');
+						requireAIReview(result.ctx.searchInfos, error || '模型答案一致，但无法匹配页面选项或空位，等待人工评判。');
 					}
 					result.confirmReview = reviews.add(
 						() => result.ctx?.searchInfos || [],
 						() => {
-							if (this.isClose || !result.ctx?.root.isConnected) throw new Error('原题已失效，请重新开始答题。');
+							const root = result.ctx?.root;
+							if (this.isClose || !root?.isConnected || latestQuestionResults.get(root) !== result)
+								throw new Error('原题已失效，请重新开始答题。');
 							if (result.retrying) throw new Error('本题正在重新请求或采用候选，请等待操作完成。');
 						},
-						async () => {
-							const previous = { error: result.error, result: result.result };
-							result.error = undefined;
-							result.result = { finish: true, manual: true };
+						async (decision) => {
+							const previous = {
+								error: result.error,
+								result: result.result,
+								skipped: result.skipped,
+								confirmReview: result.confirmReview
+							};
+							if (decision === 'skipped') {
+								result.skipped = true;
+								result.confirmReview = undefined;
+							} else {
+								result.error = undefined;
+								result.result = { finish: true, manual: true };
+							}
 							try {
 								await this.opts.onResultsUpdate?.(result, index, results);
 							} catch (error) {
@@ -404,6 +473,24 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 						}
 					);
 				}
+
+				const root = result.ctx?.root;
+				const pageUrl = root?.ownerDocument.location?.href;
+				result.skip = createSkipAction(result, {
+					validate: () => {
+						if (
+							this.isClose ||
+							!root?.isConnected ||
+							root.ownerDocument.location?.href !== pageUrl ||
+							latestQuestionResults.get(root) !== result
+						) {
+							throw new Error('原题已失效，请重新开始答题。');
+						}
+					},
+					finished: () => result.result?.finish,
+					review: () => result.confirmReview,
+					update: () => this.opts.onResultsUpdate?.(result, index, results)
+				});
 
 				if (options?.enable_debug) {
 					console.log(
@@ -510,7 +597,7 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 		if (type !== 'nomove') {
 			let finished = 0;
 			for (const result of results) {
-				if (result.result?.finish) {
+				if (result.result?.finish && !result.skipped) {
 					finished++;
 				}
 			}
@@ -529,6 +616,7 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 	isRunning = false;
 	isClose = false;
 	isStop = false;
+	private run = 0;
 
 	constructor(opts: CustomWorkOptions) {
 		super();
@@ -537,6 +625,7 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 
 	/** 启动答题器  */
 	async doWork(options?: { enable_debug?: boolean }) {
+		const run = ++this.run;
 		this.emit('start');
 		this.isRunning = true;
 
@@ -575,7 +664,7 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 			if (this.isClose) return;
 
 			const question = questions[index];
-			results[index] = {
+			const result: SimplifyWorkResult = {
 				question: question.text,
 				requested: false,
 				resolved: false,
@@ -584,6 +673,17 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 				finish: false,
 				error: ''
 			};
+			results[index] = result;
+			const validate = () => {
+				if (this.isClose || run !== this.run) throw new Error('原答题任务已失效，请重新开始。');
+			};
+			const update = () => this.opts.onResultsUpdate?.(result, index, results);
+			result._skip = createSkipAction(result, {
+				validate,
+				finished: () => result.finish,
+				review: () => result._confirmReview,
+				update
+			});
 
 			try {
 				const infos = await this.opts.answerer(question.text);
@@ -616,23 +716,27 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 							info.results = [];
 							info.error = infos[i].error;
 						});
-						results[index]._confirmReview = reviews.add(
-							infos,
-							() => {
-								if (this.isClose) throw new Error('原任务已关闭。');
-							},
-							async () => {
-								const previous = { finish: results[index].finish, error: results[index].error };
-								results[index].finish = true;
-								results[index].error = undefined;
-								try {
-									await this.opts.onResultsUpdate?.(results[index], index, results);
-								} catch (error) {
-									Object.assign(results[index], previous);
-									throw error;
-								}
+						result._confirmReview = reviews.add(infos, validate, async (decision) => {
+							const previous = {
+								finish: result.finish,
+								error: result.error,
+								skipped: result.skipped,
+								_confirmReview: result._confirmReview
+							};
+							if (decision === 'skipped') {
+								result.skipped = true;
+								result._confirmReview = undefined;
+							} else {
+								result.finish = true;
+								result.error = undefined;
 							}
-						);
+							try {
+								await update();
+							} catch (error) {
+								Object.assign(result, previous);
+								throw error;
+							}
+						});
 					}
 				} catch (err) {
 					results[index].finish = false;
@@ -643,8 +747,8 @@ export class CustomOCSWorker extends CommonEventEmitter<WorkerEvents> {
 			} catch (err) {
 				if (this.isClose) return;
 				results[index].requested = true;
-				results[index].resolved = false;
-				results[index].finish = true;
+				results[index].resolved = true;
+				results[index].finish = false;
 				results[index].error = err instanceof Error ? err.message : String(err);
 				await this.opts.onResultsUpdate?.(results[index], index, results);
 			}
