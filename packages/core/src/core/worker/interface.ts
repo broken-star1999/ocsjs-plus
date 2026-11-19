@@ -57,9 +57,15 @@ export interface ResolverResult {
 	finish: boolean;
 }
 
+export type ReviewControl = (() => Promise<void>) & {
+	complete?: () => void;
+	pending?: () => boolean;
+	skip?: () => Promise<void>;
+};
+
 /** 答题结果 */
 export interface WorkResult<E extends RawElements> {
-	confirmReview?: (() => Promise<void>) & { complete?: () => void; pending?: () => boolean };
+	confirmReview?: ReviewControl;
 	/** Explicitly adopt a current model candidate through the platform's validated replacement adapter. */
 	applyReviewAnswer?: (answers: string[]) => Promise<void>;
 	/** Scroll to the live question in its owning frame. */
@@ -67,6 +73,8 @@ export interface WorkResult<E extends RawElements> {
 	/** 仅在当前页面内有效，不可直接序列化。由已适配的平台提供。 */
 	retry?: () => Promise<void>;
 	retrying?: boolean;
+	skip?: (() => Promise<void>) & { inProgress?: () => boolean };
+	skipped?: boolean;
 	/** 查题完毕 */
 	requested: boolean;
 	/** 正在搜题中（查题线程已启动但尚未返回，供结果面板显示等待动画） */
@@ -85,7 +93,10 @@ export interface WorkResult<E extends RawElements> {
  */
 export interface SimplifyWorkResult {
 	/** Local callback, removed by the scripts layer before storing results. */
-	_confirmReview?: () => Promise<void>;
+	_confirmReview?: ReviewControl;
+	_skip?: () => Promise<void>;
+	skipControl?: { id: string; frame: string };
+	skipped?: boolean;
 	reviewControl?: { id: string; frame: string };
 	reviewActions?: {
 		adopt?: { id: string; frame: string };

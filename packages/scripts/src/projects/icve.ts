@@ -911,7 +911,7 @@ function work({ answererWrappers, period, thread, answerSeparators }: CommonWork
 		},
 		onResultsUpdate(currentResult) {
 			// 逐题更新搜索结果面板（等待搜索中→等待答题中→已答题/失败）
-			updateDynamicResult(currentResult, titleTransform);
+			return updateDynamicResult(currentResult, titleTransform);
 		}
 	});
 
@@ -1052,7 +1052,7 @@ function aiWork({ answererWrappers, period, thread, answerSeparators }: CommonWo
 		},
 		onResultsUpdate(currentResult) {
 			// 逐题更新搜索结果面板（等待搜索中→等待答题中→已答题/失败）
-			updateDynamicResult(currentResult, titleText);
+			return updateDynamicResult(currentResult, titleText);
 		}
 	});
 

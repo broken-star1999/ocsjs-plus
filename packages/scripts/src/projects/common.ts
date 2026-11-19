@@ -42,6 +42,7 @@ import { openAICallLog } from '../utils/ai-call-log-panel';
 import {
 	createQuestionRetryControl,
 	createManualReviewControl,
+	createUnansweredQuestionControl,
 	serializeManualReview,
 	requestReviewAction
 } from '../utils/question-retry-control';
@@ -124,7 +125,8 @@ const count = (results: SimplifyWorkResult[]) => ({
 	total: results.length,
 	requested: results.filter((r) => r.requested).length,
 	resolved: results.filter((r) => r.resolved).length,
-	finished: results.filter((r) => r.finish).length,
+	finished: results.filter((r) => r.finish && !r.skipped).length,
+	skipped: results.filter((r) => r.skipped).length,
 	review: results.filter((r) => r.searchInfos.some((info) => info.ensemble?.status === 'review')).length
 });
 
@@ -1492,7 +1494,7 @@ export const CommonProject = Project.create({
 					 * 数组长度不足时以空占位结果补齐中间空位（多线程答题结果可能乱序到达）。
 					 */
 					update: async (index: number, result: SimplifyWorkResult): Promise<void> => {
-						result = serializeManualReview(result);
+						result = serializeManualReview(result, () => CommonProject.scripts.workResults.methods.getResults());
 						return enqueueWorkResultWrite(async () => {
 							const data = (await $store.getTab(TAB_WORK_RESULTS_KEY)) || [];
 							const placeholder = {
@@ -1523,10 +1525,13 @@ export const CommonProject = Project.create({
 					 * 仅当传入数组比当前存储更长时才写入（按位置保留已有最新状态），重复调用无副作用。
 					 */
 					fillAll: async (results: SimplifyWorkResult[]): Promise<void> => {
-						return enqueueWorkResultWrite(() => $store.setTab(TAB_WORK_RESULTS_KEY, results));
+						const serializable = results.map((result) =>
+							serializeManualReview(result, () => CommonProject.scripts.workResults.methods.getResults())
+						);
+						return enqueueWorkResultWrite(() => $store.setTab(TAB_WORK_RESULTS_KEY, serializable));
 					},
 					append: async (result: SimplifyWorkResult): Promise<void> => {
-						result = serializeManualReview(result);
+						result = serializeManualReview(result, () => CommonProject.scripts.workResults.methods.getResults());
 						CommonProject.scripts.workResults.cfg.dynamicResults = true;
 						return enqueueWorkResultWrite(async () => {
 							const data = (await $store.getTab(TAB_WORK_RESULTS_KEY)) || [];
@@ -1604,7 +1609,10 @@ export const CommonProject = Project.create({
 								num.classList.add('active');
 							}
 
-							if (result.finish) {
+							if (result.skipped) {
+								num.classList.add('skipped');
+								num.setAttribute('aria-label', `第 ${index + 1} 题已跳过`);
+							} else if (result.finish) {
 								num.classList.add('finish');
 							} else {
 								if (
@@ -1650,10 +1658,12 @@ export const CommonProject = Project.create({
 									`已处理: ${stats.resolved}/${stats.total}`,
 									`已填写/已确认: ${stats.finished}/${stats.total}`,
 									`待人工: ${stats.review} 题`,
+									`已跳过: ${stats.skipped} 题`,
 									'⚪ 白色序号：等待处理中',
 									'🔵 蓝边序号：已完成搜索',
 									'🔵 蓝色序号：已搜索已答题',
 									'🔴 红色序号：搜索失败或没答案/不匹配等情况',
+									'灰色虚线序号表示已跳过',
 									'',
 									'👉点击序号，查看搜索结果'
 								];
@@ -1713,7 +1723,8 @@ export const CommonProject = Project.create({
 									[
 										h(
 											'span',
-											`已处理 ${stats.resolved}/${stats.total} · 已填写/确认 ${stats.finished} · 待人工 ${stats.review}`
+											`已处理 ${stats.resolved}/${stats.total} · 已填写/确认 ${stats.finished} · 待人工 ${stats.review}` +
+												(stats.skipped ? ` · 已跳过 ${stats.skipped}` : '')
 										)
 									]
 								);
@@ -1778,6 +1789,7 @@ export const CommonProject = Project.create({
 						/** 渲染结果列表 */
 						const createResult = (result: SimplifyWorkResult | undefined) => {
 							if (result) {
+								const unanswered = createUnansweredQuestionControl(result);
 								const reviewResult = automaticProcessingDone
 									? result
 									: {
@@ -1802,7 +1814,8 @@ export const CommonProject = Project.create({
 											: undefined
 									}),
 									createQuestionRetryControl(result, state.workResult.isWorkerWorking || questionRetryBusy),
-									createManualReviewControl(reviewResult)
+									createManualReviewControl(reviewResult),
+									...(unanswered ? [unanswered] : [])
 								]);
 							} else {
 								return h('div', 'undefined');
@@ -2259,7 +2272,12 @@ const typeMismatchTexts: Record<string, string> = {
 function createSearchResultAlertElement(result: SimplifyWorkResult) {
 	let info: HTMLElement | null = null;
 	let err = result.error || result.searchInfos.find((i) => i.error)?.error;
-	if (result.requested === false && result.resolved === false) {
+	if (result.skipped) {
+		info = h('div', { className: 'result-info warn' }, [
+			'已跳过，仍计为未答。',
+			...(err ? [h('details', [h('summary', '查看跳过前的提示'), h('div', err)])] : [])
+		]);
+	} else if (result.requested === false && result.resolved === false) {
 		info = h('div', { className: 'result-info unresolved' }, '等待搜索中... 🔍');
 	} else if (result.searchInfos.some((info) => info.ensemble?.status === 'review')) {
 		info = h('div', { className: 'result-info warn' }, '等待人工评判：可展开比较候选并采用，或在原题处理后确认。');

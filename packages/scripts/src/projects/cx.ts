@@ -1061,8 +1061,7 @@ function workOrExam(
 		async onResultsUpdate(current, index, res) {
 			// 非预览模式：逐题更新（等待搜索中→等待答题中→已答题/失败），想要清空只能手动清空
 			if (!preview_mode) {
-				updateDynamicResult(current, workOrExamQuestionTitleText);
-				return;
+				return updateDynamicResult(current, workOrExamQuestionTitleText);
 			}
 
 			await CommonProject.scripts.workResults.methods.update(

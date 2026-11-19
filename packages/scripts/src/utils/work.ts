@@ -526,6 +526,8 @@ export function simplifyWorkResult(
 	return {
 		reviewControl: wr.confirmReview ? registerManualReview(wr, wr.confirmReview) : undefined,
 		reviewActions: registerReviewActions(wr),
+		_skip: wr.skip,
+		skipped: wr.skipped,
 		retry: registerQuestionRetry(wr),
 		retrying: wr.retrying,
 		requested: wr.requested,

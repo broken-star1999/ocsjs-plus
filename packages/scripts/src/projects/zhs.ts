@@ -2900,7 +2900,7 @@ function xnkWork({ answererWrappers, period, thread, answerSeparators }: CommonW
 		},
 		onResultsUpdate(current, _, res) {
 			// 逐题更新搜索结果面板（等待搜索中→等待答题中→已答题/失败）
-			updateDynamicResult(current, titleTransform);
+			return updateDynamicResult(current, titleTransform);
 		}
 	});
 
@@ -3029,7 +3029,7 @@ function smartWork(
 		},
 		onResultsUpdate(current, _, res) {
 			// 逐题更新搜索结果面板（等待搜索中→等待答题中→已答题/失败）
-			updateDynamicResult(current, titleTransform);
+			return updateDynamicResult(current, titleTransform);
 		}
 	});
 
@@ -3175,7 +3175,7 @@ function smartExam(
 		},
 		onResultsUpdate(current, _, res) {
 			// 逐题更新搜索结果面板（等待搜索中→等待答题中→已答题/失败）
-			updateDynamicResult(current, titleTransform);
+			return updateDynamicResult(current, titleTransform);
 		}
 	});
 
@@ -3441,7 +3441,7 @@ function hikeWork(
 		},
 		onResultsUpdate(current, _, res) {
 			// 逐题更新搜索结果面板（等待搜索中→等待答题中→已答题/失败）
-			updateDynamicResult(current, titleTransform);
+			return updateDynamicResult(current, titleTransform);
 		}
 	});
 

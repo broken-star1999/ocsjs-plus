@@ -7,6 +7,7 @@ const ids = new WeakMap<WorkResult<any>, string>();
 const reviewIds = new WeakMap<object, string>();
 const adoptIds = new WeakMap<object, string>();
 const locateIds = new WeakMap<object, string>();
+const skipIds = new WeakMap<object, string>();
 let listening = false;
 
 /** 只有会话地址进入结果存储；DOM 与回调始终留在创建它们的页面中。 */
@@ -59,9 +60,9 @@ function registerAction(
 	if (!listening) {
 		listening = true;
 		cors.on(frame, async ([requestedId, expiresAt, answers]) => {
-			if (Date.now() > expiresAt) return '重做指令已过期，请重新点击。';
+			if (Date.now() > expiresAt) return '题目操作已过期，请重新点击。';
 			const action = actions.get(requestedId);
-			if (!action) return '这道题的重做入口已失效，请重新开始答题。';
+			if (!action) return '题目操作入口已失效，请重新开始答题。';
 			try {
 				await action(answers);
 				return '';
@@ -73,10 +74,69 @@ function registerAction(
 	return { id, frame };
 }
 
-export function serializeManualReview(result: SimplifyWorkResult): SimplifyWorkResult {
-	const { _confirmReview, ...serializable } = result;
+export function serializeManualReview(
+	result: SimplifyWorkResult,
+	getResults?: () => Promise<SimplifyWorkResult[]>
+): SimplifyWorkResult {
+	const { _confirmReview, _skip, ...serializable } = result;
 	if (_confirmReview) serializable.reviewControl = registerManualReview(result, _confirmReview);
+	if (
+		_skip &&
+		result.requested &&
+		result.resolved &&
+		!result.searching &&
+		!result.retrying &&
+		!result.finish &&
+		!result.skipped
+	) {
+		const address = registerAction(
+			_skip,
+			async () => {
+				if (
+					getResults &&
+					!(await getResults()).some(
+						(row) => row.skipControl?.id === address.id && row.skipControl?.frame === address.frame
+					)
+				) {
+					throw new Error('本题的跳过入口已失效，请刷新答题结果。');
+				}
+				await _skip();
+			},
+			skipIds
+		);
+		serializable.skipControl = address;
+	}
 	return serializable;
+}
+
+export function createUnansweredQuestionControl(result: SimplifyWorkResult): HTMLElement | undefined {
+	if (!result.resolved || result.finish || result.retrying) return;
+	const address = result.skipped ? undefined : result.skipControl;
+	const locate = result.reviewControl && !result.skipped ? undefined : result.reviewActions?.locate;
+	if (!address && !locate) return;
+	const root = h('div', { className: 'unanswered-question-actions', style: { marginTop: '8px' } });
+	const status = h('div', { role: 'status', style: { color: '#c0392b', whiteSpace: 'pre-wrap' } });
+	for (const [action, label] of [
+		[address, '跳过本题'],
+		[locate, '定位原题']
+	] as const) {
+		if (!action) continue;
+		const button = h('button', { type: 'button', className: 'base-style-button-secondary' }, label);
+		button.onclick = async () => {
+			button.disabled = true;
+			status.textContent = '';
+			try {
+				await requestReviewAction(action, undefined, 10_000);
+				if (action === locate) button.disabled = false;
+			} catch (error) {
+				status.textContent = error instanceof Error ? error.message : String(error);
+				button.disabled = false;
+			}
+		};
+		root.append(button);
+	}
+	root.append(status);
+	return root;
 }
 
 export function createManualReviewControl(result: SimplifyWorkResult): HTMLElement {
@@ -129,11 +189,12 @@ export async function requestQuestionRetry(address: NonNullable<SimplifyWorkResu
 
 export async function requestReviewAction(
 	address: NonNullable<SimplifyWorkResult['retry']>,
-	answers?: string[]
+	answers?: string[],
+	timeoutMs = answers ? 60_000 : 8 * 60_000
 ): Promise<void> {
 	if (address.frame === frame) {
 		const action = actions.get(address.id);
-		if (!action) throw new Error('这道题的重做入口已失效，请重新开始答题。');
+		if (!action) throw new Error('题目操作入口已失效，请重新开始答题。');
 		await action(answers);
 		return;
 	}
@@ -142,7 +203,7 @@ export async function requestReviewAction(
 	await new Promise<void>((resolve, reject) => {
 		const timer = setTimeout(
 			() => reject(new Error('尚未收到原答题页面的完成结果，请检查原题与处理状态，避免重复点击。')),
-			answers ? 60_000 : 8 * 60_000
+			timeoutMs
 		);
 		cors.emit(address.frame, [address.id, Date.now() + 3000, answers], (error) => {
 			clearTimeout(timer);

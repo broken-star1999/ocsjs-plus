@@ -94,7 +94,9 @@ export class SearchInfosElement extends HTMLElement {
 
 				const isAI =
 					!!info.ai || !!info.ensemble || info.results.some((ans) => (ans[2] as { ai_native?: boolean })?.ai_native);
-				const repeatedReviewReason = info.ensemble?.status === 'review' && info.error === info.ensemble.reason;
+				const repeatedReviewReason =
+					(info.ensemble?.status === 'review' || info.ensemble?.status === 'skipped') &&
+					info.error === info.ensemble.reason;
 				const results = (
 					info.error && !repeatedReviewReason
 						? /** 显示错误信息 */
