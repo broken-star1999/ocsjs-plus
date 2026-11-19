@@ -1397,7 +1397,9 @@ async function ai_watch(options: { volume: number; playbackRate: number }) {
  */
 function examination(opts: CommonWorkOptions) {
 	$message.info(`开始考试`);
-	CommonProject.scripts.workResults.methods.init();
+	CommonProject.scripts.workResults.methods.init({
+		questionPositionSyncHandlerType: 'yuketang_exam'
+	});
 
 	const redundanceWords = opts.redundanceWordsText.split('\n').filter(Boolean);
 	const titleTransform = (titles: (HTMLElement | undefined)[]) =>
@@ -1457,13 +1459,21 @@ function examination(opts: CommonWorkOptions) {
 		return (await Promise.all(pending)).flat();
 	};
 
+	const clickExamOption = (option: HTMLElement | undefined) => {
+		const label = option?.querySelector('label');
+		if (!option || !label) throw new Error('未找到雨课堂考试的选项控件。');
+		if (label.classList.contains('is-checked') || option.querySelector('.el-icon-check')) return false;
+		label.click();
+		return true;
+	};
+
 	// 这里跟章节测试的连线题不一样，章节测试是新版连线题
 	/** 新建答题器 */
 	const worker = new OCSWorker({
 		root: '.exam-main--content .subject-item',
 		elements: {
-			title: '.clearfix.exam-font .custom_ueditor_cn_body',
-			options: 'ul.list-unstyled li .custom_ueditor_cn_body',
+			title: 'h3.clearfix.exam-font,h4.clearfix.exam-font,h5.clearfix.exam-font,h6.clearfix.exam-font',
+			options: 'ul.list-unstyled li',
 			type: '.item-type',
 			textareas: (root) => {
 				// 主观题为 UEditor 富文本编辑器（iframe 作为填充目标）；
@@ -1504,11 +1514,8 @@ function examination(opts: CommonWorkOptions) {
 			// 通用单选多选题
 			if (type && (type === 'multiple' || type === 'single')) {
 				const resolver = createDefaultQuestionResolver(ctx, (o) => extractTextWithImages(o).text)[type];
-				return await resolver(searchInfos, elements.options as HTMLElement[], async (type, answer, option) => {
-					if (!option?.querySelector('.el-icon-check')) {
-						option.click();
-						await $.sleep(500);
-					}
+				return await resolver(searchInfos, elements.options as HTMLElement[], async (_type, _answer, option) => {
+					if (clickExamOption(option)) await $.sleep(500);
 				});
 			}
 			// 判断题处理
@@ -1518,7 +1525,7 @@ function examination(opts: CommonWorkOptions) {
 						searchInfos,
 						elements.options as HTMLElement[],
 						async (_type, _answer, option) => {
-							if (!option?.querySelector('.el-icon-check')) option.click();
+							clickExamOption(option);
 						}
 					);
 				}
@@ -1527,7 +1534,7 @@ function examination(opts: CommonWorkOptions) {
 				const result = resolveJudgement(answersGroup, optionTexts);
 				if (result.finish && result.option) {
 					const index = optionTexts.indexOf(result.option);
-					ctx.elements.options[index]?.click();
+					clickExamOption(ctx.elements.options[index]);
 					return { finish: true };
 				}
 				return { finish: false };
