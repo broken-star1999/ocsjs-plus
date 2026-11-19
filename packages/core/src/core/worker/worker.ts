@@ -1,6 +1,7 @@
 import { $, $message, CommonEventEmitter } from 'easy-us';
 import { domSearchAll } from '../utils/dom';
 import {
+	AnswerFill,
 	CustomWorkOptions,
 	RawElements,
 	ReviewControl,
@@ -393,13 +394,25 @@ export class OCSWorker<E extends RawElements = RawElements> extends CommonEventE
 								/** 使用默认处理器 */
 
 								if (result.ctx.type) {
+									const work = this.opts.work;
 									const resolver = createDefaultQuestionResolver(
 										result.ctx,
 										// @ts-ignore work.optionText 跨 E 类型透传
-										this.opts.work.optionText
+										work.optionText
 									)[result.ctx.type];
-									const handler = this.opts.work.handler;
-									res = await resolver(result.ctx.searchInfos, result.ctx.elements.options as HTMLElement[], handler);
+									const fills: AnswerFill[] = [];
+									const resolved = await resolver(
+										result.ctx.searchInfos,
+										result.ctx.elements.options as HTMLElement[],
+										work.verifyFilled
+											? async (type, answer, option, ctx) => {
+													await work.handler(type, answer, option, ctx);
+													fills.push({ answer, option });
+											  }
+											: work.handler
+									);
+									if (resolved.finish) await work.verifyFilled?.(result.ctx, fills);
+									res = resolved;
 								} else {
 									error = '无法识别题型。你可以在结果中跳过本题。';
 								}

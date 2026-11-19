@@ -215,6 +215,9 @@ const state = {
 			'zhs-smart': (index: number) => {
 				document.querySelectorAll<HTMLElement>('[role="treeitem"] .font-sec-style-node').item(index)?.click();
 			},
+			'zhs-smart-exam': (index: number) => {
+				document.querySelectorAll<HTMLElement>('.grid.grid-cols-7 > button').item(index)?.click();
+			},
 			'zhs-fusion': (index: number) => {
 				document.querySelectorAll<HTMLElement>('.right-box .list .item').item(index)?.click();
 			},

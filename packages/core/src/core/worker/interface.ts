@@ -150,6 +150,11 @@ export type QuestionResolver<E> = (
 	) => void | Promise<void>
 ) => Promise<ResolverResult>;
 
+export interface AnswerFill {
+	answer: string;
+	option: HTMLElement;
+}
+
 /**
  * 使用默认工作器
  *
@@ -164,6 +169,8 @@ export interface DefaultWork<E extends RawElements> {
 	 * 不传则回退到 `o.innerText`。
 	 */
 	optionText?: (el: HTMLElement, i: number) => string;
+	/** Verify the final page state before the worker records a successful result. Throw on failure. */
+	verifyFilled?: (ctx: WorkContext<E>, fills: readonly AnswerFill[]) => void | Promise<void>;
 	/**
      * 处理器， 每个题目的处理器， 实例可看默认的 zhs `作业脚本` 写法 : https://github.com/ocsjs/ocsjs/blob/3.0/packages/scripts/src/browser/zhs/work.ts
      *
