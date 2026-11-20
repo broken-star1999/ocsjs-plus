@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
-import { AnswererWrapper, AnswerWrapperHandlerConfig, WorkContext, aiModelKey } from '../packages/core';
+import {
+	AnswererWrapper,
+	AnswerWrapperHandlerConfig,
+	WorkContext,
+	aiModelKey,
+	createDefaultQuestionResolver
+} from '../packages/core';
 import { CommonProject } from '../packages/scripts/src/projects/common';
 import { inspectAIWorkConfiguration } from '../packages/scripts/src/utils/ai-work-status';
 import { matchBankSelections, withBankFallback } from '../packages/scripts/src/utils/bank-fallback';
@@ -50,9 +56,13 @@ function mockRequests(handler: (name: string, request: Request) => void | (() =>
 	return calls;
 }
 
-function question(wrappers: AnswererWrapper[], type: WorkContext<any>['type'] = 'single') {
+function question(
+	wrappers: AnswererWrapper[],
+	type: WorkContext<any>['type'] = 'single',
+	optionTexts = ['雪梨', '柠檬', '柚子']
+) {
 	const root = document.createElement('div');
-	const options = ['雪梨', '柠檬', '柚子'].map((text) => {
+	const options = optionTexts.map((text) => {
 		const label = document.createElement('label');
 		label.textContent = text;
 		root.append(label);
@@ -180,6 +190,58 @@ async function main() {
 		const fixture = question(withBankFallback([first, second], ai), 'multiple');
 		assert.equal((await fixture.run())[0].results[0].answer, 'BC');
 		assert.deepEqual(calls, ['first', 'second']);
+	});
+
+	await test('exact uppercase option text takes precedence over out-of-range choice letters', async () => {
+		const cases = [
+			{ answer: 'AC#DNS', optionTexts: ['A. AC', 'B. DNS', '互联网协议'] },
+			{ answer: 'A Z', optionTexts: ['雪梨', 'A Z', '柚子'] }
+		];
+		for (const { answer, optionTexts } of cases) {
+			const calls = mockRequests((name, request) => respond(request, { answer: name === 'first' ? answer : 'BC' }));
+			const fixture = question(withBankFallback([first, second], ai), 'multiple', optionTexts);
+			assert.equal((await fixture.run())[0].results[0].answer, answer);
+			assert.deepEqual(calls, ['first']);
+		}
+	});
+
+	await test('ordinary fuzzy option text retains the shared resolver behavior', async () => {
+		const answer = '计算机网络原例';
+		const calls = mockRequests((name, request) => respond(request, { answer: name === 'first' ? answer : 'BC' }));
+		const fixture = question(withBankFallback([first, second], ai), 'multiple', ['雪梨', '计算机网络原理', '柚子']);
+		assert.equal((await fixture.run())[0].results[0].answer, answer);
+		assert.deepEqual(calls, ['first']);
+	});
+
+	await test('out-of-range choice letters still reject partial and fuzzy text matches', async () => {
+		for (const [answer, firstOption] of [
+			['AZ', 'A'],
+			['ABCDEZ', 'ABCDEY'],
+			['A Z', 'Z'],
+			['A\nZ', 'Z']
+		]) {
+			const calls = mockRequests((name, request) => respond(request, { answer: name === 'first' ? answer : 'BC' }));
+			const fixture = question(withBankFallback([first, second], ai), 'multiple', [firstOption, '柠檬', '柚子']);
+			assert.equal((await fixture.run())[0].results[0].answer, 'BC', JSON.stringify(answer));
+			assert.deepEqual(calls, ['first', 'second']);
+		}
+	});
+
+	await test('in-range choice letters that exactly match option text keep normal filling precedence', async () => {
+		const calls = mockRequests((_name, request) => respond(request, { answer: 'AC' }));
+		const fixture = question(withBankFallback([first, second], ai), 'multiple', ['雪梨', 'AC', '柚子']);
+		const infos = await fixture.run();
+		const options = fixture.ctx.elements.options as HTMLElement[];
+		const selected: HTMLElement[] = [];
+		await createDefaultQuestionResolver(fixture.ctx, (option) => extractTextWithImages(option).text).multiple(
+			infos,
+			options,
+			async (_type, _answer, option) => {
+				selected.push(option);
+			}
+		);
+		assert.deepEqual(selected, [options[1]]);
+		assert.deepEqual(calls, ['first']);
 	});
 
 	await test('a partial text combination is not a usable multi-choice answer', async () => {

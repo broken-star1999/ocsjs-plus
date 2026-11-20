@@ -14,7 +14,7 @@ import { CommonEvents, CommonProject } from '../projects/common';
 import { $console, BackgroundProject } from '../projects/background';
 import { CommonWorkOptions } from '.';
 import { createIframeControlSession } from './iframe-control-bar';
-import { registerQuestionRetry, registerManualReview, registerReviewActions } from './question-retry-control';
+import { registerWorkResultActions } from './question-retry-control';
 import { inspectAIWorkConfiguration } from './ai-work-status';
 import { matchBankAnswer, searchBanksThenAI, unavailableBankFallback } from './bank-fallback';
 import {
@@ -293,23 +293,34 @@ export function commonWork(options: {
 		// 子 iframe 操控会话：worker 创建后激活（渲染操控条到顶层 $elements.root）
 		iframeControl?.activate();
 
-		if (state.worker) {
+		const worker = state.worker;
+		if (worker) {
 			const emitState = CommonEvents.emitWorkerStateChange;
+			let closed = false;
 			emitState('start');
-			state.worker.on('stop', () => emitState('stop'));
+			worker.on('stop', () => {
+				if (!closed && state.worker === worker) emitState('stop');
+			});
 			// 恢复答题视为重新开始工作（isWorkerWorking=true，气泡重新显示）
-			state.worker.on('continuate', () => emitState('start'));
-			state.worker.once('close', () => {
+			worker.on('continuate', () => {
+				if (!closed && state.worker === worker) emitState('start');
+			});
+			worker.once('close', () => {
+				closed = true;
+				if (state.worker !== worker) return;
 				emitState('close');
 				iframeControl?.dispose();
 			});
-			state.worker.once('done', () => {
+			worker.once('done', () => {
+				if (state.worker !== worker) return;
 				state.running = false;
 				state.controlPanel = null;
 				state.paused = false;
 				controlBtn.disabled = true;
-				emitState('done');
-				iframeControl?.finish();
+				if (!closed) {
+					emitState('done');
+					iframeControl?.finish();
+				}
 			});
 		}
 	};
@@ -325,8 +336,24 @@ export function dynamicWorkTips(worker: CommonEventEmitter<WorkerEvents>) {
 		content: '⚠️ 正在逐题自动答题，过程中请勿手动切换题目，防止答题与搜索结果错乱。',
 		duration: 0
 	});
-	worker.once('done', () => msg?.remove());
-	worker.once('close', () => msg?.remove());
+	const emitState = CommonEvents.emitWorkerStateChange;
+	emitState('start');
+	const pause = () => emitState('stop');
+	const resume = () => emitState('start');
+	worker.on('stop', pause);
+	worker.on('continuate', resume);
+	const finish = (state: 'done' | 'close') => {
+		worker.removeListener('stop', pause);
+		worker.removeListener('continuate', resume);
+		worker.removeListener('done', onDone);
+		worker.removeListener('close', onClose);
+		msg?.remove();
+		emitState(state);
+	};
+	const onDone = () => finish('done');
+	const onClose = () => finish('close');
+	worker.once('done', onDone);
+	worker.once('close', onClose);
 }
 
 /**
@@ -525,11 +552,9 @@ export function simplifyWorkResult(
 			.join('<br>') ||
 		'';
 	return {
-		reviewControl: wr.confirmReview ? registerManualReview(wr, wr.confirmReview) : undefined,
-		reviewActions: registerReviewActions(wr),
+		...registerWorkResultActions(wr),
 		_skip: wr.skip,
 		skipped: wr.skipped,
-		retry: registerQuestionRetry(wr),
 		retrying: wr.retrying,
 		requested: wr.requested,
 		searching: wr.searching,

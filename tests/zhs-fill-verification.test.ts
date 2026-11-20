@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { OCSWorker } from '../packages/core/src/core/worker/worker';
 import type { QuestionTypes } from '../packages/core/src/core/worker/interface';
+import type { RemotePage } from '../packages/core/src/utils/playwright';
 import {
 	createZhsAnswerFill,
 	zhsExamText,
@@ -174,6 +175,88 @@ async function main() {
 		inspect: (root) => assert.equal(root.querySelector('textarea')?.value, '')
 	});
 
+	for (const [name, markup] of [
+		['readonly', '<textarea class="answer-target" readonly>原答案</textarea>'],
+		['disabled', '<textarea class="answer-target" disabled>原答案</textarea>'],
+		['disabled fieldset', '<fieldset disabled><textarea class="answer-target">原答案</textarea></fieldset>']
+	]) {
+		await exercise(`${name} keeps the original answer and remains unfinished`, {
+			...textFixture,
+			markup,
+			finished: false,
+			error: /不可编辑/,
+			setup(root) {
+				const input = mountTextInput(root);
+				input.focus = () => assert.fail('locked input must not be focused');
+			},
+			inspect: (root) => assert.equal(root.querySelector('textarea')?.value, '原答案')
+		});
+	}
+
+	await exercise('a field locked by its focus handler is left unchanged', {
+		...textFixture,
+		markup: '<textarea class="answer-target">原答案</textarea>',
+		finished: false,
+		error: /不可编辑/,
+		setup(root) {
+			const input = mountTextInput(root);
+			input.focus = () => (input.readOnly = true);
+		},
+		inspect: (root) => assert.equal(root.querySelector('textarea')?.value, '原答案')
+	});
+
+	await exercise('a field locked after writing still passes read-back', {
+		...textFixture,
+		finished: true,
+		setup(root) {
+			const input = mountTextInput(root);
+			input.addEventListener('input', () => (input.disabled = true));
+		},
+		inspect(root) {
+			const input = root.querySelector('textarea')!;
+			assert.equal(input.disabled, true);
+			assert.equal(input.value, textFixture.answer);
+		}
+	});
+
+	let remoteClicks = 0;
+	const remote = {
+		async click(input: HTMLInputElement) {
+			remoteClicks++;
+			input.disabled = true;
+		},
+		async 'keyboard.type'() {
+			assert.fail('remote typing must not run after the input locks');
+		}
+	} as unknown as RemotePage;
+	await exercise('a field locked during the remote click keeps its old value', {
+		...textFixture,
+		markup: '<label class="answer-target"><input value="原答案"></label>',
+		controls: createZhsAnswerFill('icon', remote, zhsFormText('input', remote)),
+		finished: false,
+		error: /不可编辑/,
+		inspect(root) {
+			assert.equal(remoteClicks, 1);
+			assert.equal(root.querySelector('input')?.value, '原答案');
+		}
+	});
+
+	await exercise('the smart exam fallback fills the visible input and leaves hidden data untouched', {
+		...textFixture,
+		markup: '<label class="answer-target"><input type="hidden" value="原数据"><input type="text"></label>',
+		controls: createZhsAnswerFill('component', undefined, zhsExamText),
+		finished: true,
+		setup(root) {
+			const input = root.querySelector<HTMLInputElement>('input[type="text"]')!;
+			input.focus = () => {};
+			input.blur = () => {};
+		},
+		inspect(root) {
+			assert.equal(root.querySelector<HTMLInputElement>('input[type="hidden"]')?.value, '原数据');
+			assert.equal(root.querySelector<HTMLInputElement>('input[type="text"]')?.value, textFixture.answer);
+		}
+	});
+
 	const text = '<b>保留原始符号</b>';
 	await exercise('smart exam editor round-trips literal text through its data interface', {
 		type: 'completion',
@@ -183,14 +266,38 @@ async function main() {
 		finished: true,
 		setup(root) {
 			const editor = root.querySelector('.real-editor')!;
-			Reflect.set(editor, 'ckeditorInstance', {
-				data: { get: () => editor.innerHTML, set: (html: string) => (editor.innerHTML = html) }
-			});
+			const instance = {
+				isReadOnly: false,
+				data: {
+					get: () => editor.innerHTML,
+					set(html: string) {
+						editor.innerHTML = html;
+						instance.isReadOnly = true;
+					}
+				}
+			};
+			Reflect.set(editor, 'ckeditorInstance', instance);
 		},
 		inspect(root) {
 			assert.equal(root.querySelector('.real-editor')?.textContent, text);
 			assert.equal(root.querySelector('.real-editor b'), null);
 		}
+	});
+
+	await exercise('a locked smart exam editor is never written', {
+		...textFixture,
+		markup: '<div class="answer-target real-editor">原答案</div>',
+		controls: createZhsAnswerFill('component', undefined, zhsExamText),
+		finished: false,
+		error: /不可编辑/,
+		setup(root) {
+			const editor = root.querySelector('.real-editor')!;
+			Reflect.set(editor, 'ckeditorInstance', {
+				isReadOnly: true,
+				data: { get: () => editor.innerHTML, set: () => assert.fail('locked editor must not be written') }
+			});
+		},
+		inspect: (root) => assert.equal(root.querySelector('.real-editor')?.textContent, '原答案')
 	});
 
 	await exercise('training editor writes text into an editable surface', {
@@ -199,10 +306,24 @@ async function main() {
 		markup: '<div class="answer-target"><div class="vditor-reset" contenteditable="true"></div></div>',
 		controls: createZhsAnswerFill('training', undefined, zhsTrainingText),
 		finished: true,
+		setup(root) {
+			const editor = root.querySelector('.vditor-reset')!;
+			editor.addEventListener('input', () => editor.setAttribute('contenteditable', 'false'));
+		},
 		inspect(root) {
 			assert.equal(root.querySelector('.vditor-reset')?.textContent, text);
 			assert.equal(root.querySelector('.vditor-reset b'), null);
 		}
+	});
+
+	await exercise('a training editor inheriting a locked state keeps its previous text', {
+		...textFixture,
+		markup:
+			'<div class="answer-target" contenteditable="false"><div class="vditor-reset" contenteditable="invalid">原答案</div></div>',
+		controls: createZhsAnswerFill('training', undefined, zhsTrainingText),
+		finished: false,
+		error: /不可编辑/,
+		inspect: (root) => assert.equal(root.querySelector('.vditor-reset')?.textContent, '原答案')
 	});
 }
 

@@ -44,6 +44,8 @@ import {
 	createManualReviewControl,
 	createUnansweredQuestionControl,
 	serializeManualReview,
+	assertWorkResultActionsCurrent,
+	reconcileWorkResultActions,
 	requestReviewAction
 } from '../utils/question-retry-control';
 import { createAIConsensusSettingsButton } from '../utils/ai-consensus-settings';
@@ -73,6 +75,52 @@ function enqueueWorkResultWrite(action: () => Promise<void>): Promise<void> {
 	workResultWrites = next.catch(() => {});
 	return next;
 }
+
+function getStoredWorkResults(): Promise<SimplifyWorkResult[]> {
+	return workResultWrites.then(async () => (await $store.getTab(TAB_WORK_RESULTS_KEY)) || []);
+}
+
+let observingWorkResultActions = false;
+
+async function synchronizeWorkResultActions(): Promise<void> {
+	const writes = workResultWrites;
+	const results = await getStoredWorkResults();
+	// A local commit queued after the read has its own, newer reconciliation.
+	if (writes === workResultWrites) reconcileWorkResultActions(results);
+}
+
+function serializeWorkResult(result: SimplifyWorkResult): SimplifyWorkResult {
+	if (!observingWorkResultActions) {
+		observingWorkResultActions = true;
+		// A different frame can replace or clear this tab's result list.
+		const listener = $store.addTabChangeListener(TAB_WORK_RESULTS_KEY, () => {
+			synchronizeWorkResultActions().catch((error) => {
+				console.warn('同步答题结果操作失败', error);
+			});
+		});
+		Promise.resolve(listener).catch(() => {
+			observingWorkResultActions = false;
+		});
+	}
+	return serializeManualReview(result, getStoredWorkResults);
+}
+
+async function writeWorkResults(results: SimplifyWorkResult[]): Promise<void> {
+	await $store.setTab(TAB_WORK_RESULTS_KEY, results);
+	reconcileWorkResultActions(results);
+}
+
+function hasActiveWorkResults(results: SimplifyWorkResult[]): boolean {
+	if (state.workResult.workerClosed) return false;
+	return results.some(
+		(result) =>
+			!result.resolved ||
+			result.searching ||
+			result.retrying ||
+			result.searchInfos.some((info) => info.ensemble?.status === 'review')
+	);
+}
+
 let onlineSelection: SearchSelection = { text: '', images: [] };
 const onlineSelectionListeners = new Set<() => void>();
 
@@ -113,6 +161,7 @@ export const CommonEvents = {
 	 */
 	emitWorkerStateChange: cors.defineTopFunction((workerState: 'done' | 'start' | 'stop' | 'close') => {
 		state.workResult.isWorkerWorking = workerState === 'start';
+		if (workerState === 'start' || workerState === 'close') state.workResult.workerClosed = workerState === 'close';
 		workerWorkingChangeListeners.forEach((listener) => listener());
 		CommonProject.scripts.workResults.emit('work-state-change', workerState);
 	})
@@ -193,6 +242,7 @@ const state = {
 	workResult: {
 		/** 答题 worker 是否正在工作中（动态答题器的"清空搜索结果"按钮在工作时隐藏，结束时显示） */
 		isWorkerWorking: false,
+		workerClosed: false,
 		/**
 		 * 题目位置同步处理器
 		 */
@@ -1534,9 +1584,10 @@ export const CommonProject = Project.create({
 					 * 数组长度不足时以空占位结果补齐中间空位（多线程答题结果可能乱序到达）。
 					 */
 					update: async (index: number, result: SimplifyWorkResult): Promise<void> => {
-						result = serializeManualReview(result, () => CommonProject.scripts.workResults.methods.getResults());
+						result = serializeWorkResult(result);
 						return enqueueWorkResultWrite(async () => {
 							const data = (await $store.getTab(TAB_WORK_RESULTS_KEY)) || [];
+							assertWorkResultActionsCurrent(result, data);
 							const placeholder = {
 								question: '',
 								searchInfos: [],
@@ -1548,7 +1599,7 @@ export const CommonProject = Project.create({
 								data.push(placeholder);
 							}
 							data[index] = result;
-							await $store.setTab(TAB_WORK_RESULTS_KEY, data);
+							await writeWorkResults(data);
 							cacheIfFinished(result);
 							CommonEvents.emitWorkerChanged(result);
 						});
@@ -1565,16 +1616,18 @@ export const CommonProject = Project.create({
 					 * 仅当传入数组比当前存储更长时才写入（按位置保留已有最新状态），重复调用无副作用。
 					 */
 					fillAll: async (results: SimplifyWorkResult[]): Promise<void> => {
-						const serializable = results.map((result) =>
-							serializeManualReview(result, () => CommonProject.scripts.workResults.methods.getResults())
-						);
-						return enqueueWorkResultWrite(() => $store.setTab(TAB_WORK_RESULTS_KEY, serializable));
+						const serializable = results.map(serializeWorkResult);
+						return enqueueWorkResultWrite(() => {
+							serializable.forEach((row) => assertWorkResultActionsCurrent(row));
+							return writeWorkResults(serializable);
+						});
 					},
 					append: async (result: SimplifyWorkResult): Promise<void> => {
-						result = serializeManualReview(result, () => CommonProject.scripts.workResults.methods.getResults());
+						result = serializeWorkResult(result);
 						CommonProject.scripts.workResults.cfg.dynamicResults = true;
 						return enqueueWorkResultWrite(async () => {
 							const data = (await $store.getTab(TAB_WORK_RESULTS_KEY)) || [];
+							assertWorkResultActionsCurrent(result, data);
 							// 空题目文本不参与匹配（防止多个空标题占位互相覆盖）
 							const index = result.question
 								? data.findIndex((r: SimplifyWorkResult) => r.question === result.question)
@@ -1584,7 +1637,7 @@ export const CommonProject = Project.create({
 							} else {
 								data.push(result);
 							}
-							await $store.setTab(TAB_WORK_RESULTS_KEY, data);
+							await writeWorkResults(data);
 							cacheIfFinished(result);
 							CommonEvents.emitWorkerChanged(result);
 						});
@@ -1593,11 +1646,18 @@ export const CommonProject = Project.create({
 					 * 清空搜索结果
 					 */
 					clearResults: () => {
-						return enqueueWorkResultWrite(() => $store.setTab(TAB_WORK_RESULTS_KEY, []));
+						return enqueueWorkResultWrite(() => writeWorkResults([]));
 					},
-					getResults(): Promise<SimplifyWorkResult[]> {
-						return workResultWrites.then(async () => (await $store.getTab(TAB_WORK_RESULTS_KEY)) || []);
+					clearInactiveResults: () => {
+						return enqueueWorkResultWrite(async () => {
+							const results = (await $store.getTab(TAB_WORK_RESULTS_KEY)) || [];
+							if (state.workResult.isWorkerWorking || hasActiveWorkResults(results)) {
+								throw new Error('请等待自动答题、人工处理或单题重做完成后再清空。');
+							}
+							await writeWorkResults([]);
+						});
 					},
+					getResults: getStoredWorkResults,
 					/**
 					 * 开始新答题前初始化：清空搜索结果并重置内部状态
 					 * @param opts.dynamic 是否为动态答题器（题目动态加载，结果逐题累积），动态答题器会显示手动清空按钮
@@ -1794,15 +1854,22 @@ export const CommonProject = Project.create({
 
 								/** 清空搜索结果按钮：仅动态答题器（结果逐题累积、不会自动清空）时显示在所有搜索结果的最下方；
 								 *  且仅在 worker 停止（结束/错误/暂停）时显示，正在搜题时隐藏，避免误清空正在累积的结果 */
-								if (this.cfg.dynamicResults && !state.workResult.isWorkerWorking) {
+								if (this.cfg.dynamicResults && !state.workResult.isWorkerWorking && !hasActiveWorkResults(results)) {
 									container.append(
 										h('div', { style: { textAlign: 'right', marginTop: '8px' } }, [
 											$ui.tooltip(
 												$ui.button('清空搜索结果', { className: 'base-style-button-secondary' }, (btn) => {
 													btn.title =
 														'当前为动态答题模式（题目逐题加载，结果累积显示），不会自动清空搜索结果\n点击后清空搜索结果';
-													btn.onclick = () => {
-														this.methods.clearResults();
+													btn.onclick = async () => {
+														btn.disabled = true;
+														try {
+															await this.methods.clearInactiveResults();
+														} catch (error) {
+															$message.warn(error instanceof Error ? error.message : String(error));
+															btn.disabled = false;
+															return;
+														}
 														const { panel, header } = CXProject.scripts.work;
 														if (panel && header) {
 															CXProject.scripts.work.onrender?.({ panel, header });

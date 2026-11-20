@@ -86,6 +86,91 @@ const factorySource = ts.transpileModule(
 	{ compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }
 ).outputText;
 const factory = new Function(...Object.keys(deps), factorySource)(...Object.values(deps));
+const chapterAssignmentSource = ts.transpileModule(
+	[
+		'currentYktQuestionMarker',
+		'submitYktCurrentQuestion',
+		'waitYktQuestionReady',
+		'waitYktCaptcha',
+		'waitYktWorkConfirmDialog',
+		'runYktAnswerLoop',
+		'createYktEmbeddedWorkLoop'
+	]
+		.map((name) => declaration(yktPath, name))
+		.join('\n') + '\ncreateYktEmbeddedWorkLoop;',
+	{ compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }
+).outputText;
+
+async function chapterAssignment(input: {
+	finish?: boolean;
+	skipped?: boolean;
+	confirmation?: 'graded' | 'ungraded';
+	noNavigation?: boolean;
+	alreadySubmitted?: boolean;
+	closeDuringWork?: boolean;
+}) {
+	const doc = document.implementation.createHTMLDocument('Offline chapter assignment');
+	doc.body.innerHTML = `
+		<aside class="problems-aside">
+			<div class="subject-item J_order" data-order="1"><span class="text-status">未批改</span></div>
+			<div class="subject-item J_order active" data-order="2"></div>
+		</aside>
+		<div class="container-problem"><div class="subject-item">
+			<div class="item-type">第 2 题</div><div class="problem-body">测试题目</div>
+		</div></div>
+		<div class="problem-box"><button class="el-button--primary">提交</button></div>
+	`;
+	const current = doc.querySelector('[data-order="2"]')!;
+	if (input.alreadySubmitted) current.innerHTML = '<span class="icon-status"></span>';
+	if (input.noNavigation) doc.querySelector('aside')!.remove();
+
+	let clicks = 0;
+	doc.querySelector('button')!.addEventListener('click', () => {
+		clicks++;
+		if (input.confirmation === 'graded') current.innerHTML = '<span class="icon-status"></span>';
+		if (input.confirmation === 'ungraded') current.innerHTML = '<span class="text-status">未批改</span>';
+	});
+
+	const questionRootRef: HTMLElement[] = [];
+	let attempts = 0;
+	const worker = {
+		isClose: false,
+		async doWork() {
+			attempts++;
+			assert.equal(questionRootRef.length, 1);
+			this.isClose = !!input.closeDuringWork;
+			return [{ skipped: input.skipped, result: { finish: input.finish } }];
+		},
+		emit(event: string) {
+			assert.equal(event, 'done');
+		}
+	};
+	const success: string[] = [];
+	const warnings: string[] = [];
+	let elapsed = 0;
+	const createLoop = vm.runInNewContext(chapterAssignmentSource, {
+		...deps,
+		Date: { now: () => elapsed },
+		$: {
+			async sleep(ms: number) {
+				elapsed += ms;
+			}
+		},
+		$console: { warn: noop, error: noop },
+		$message: {
+			success: ({ content }: { content: string }) => success.push(content),
+			warn: ({ content }: { content: string }) => warnings.push(content)
+		},
+		createYktAnswerWorker: () => ({ worker, questionRootRef }),
+		dynamicWorkTips: noop,
+		ensureYktFontDecrypt: noop,
+		decryptYktNow: noop,
+		YKT_ENCRYPTED_SELECTOR: '.encrypted'
+	});
+	await new Promise<void>((done) => createLoop({}, doc, done));
+	return { attempts, clicks, success, warnings };
+}
+
 const runtime = globalThis as any;
 const old = {
 	request: runtime.GM_xmlhttpRequest,
@@ -528,6 +613,35 @@ async function main() {
 			[['[图片3]', '[图片4]'], ['[图片5]']]
 		);
 		assert.deepEqual(value.clicks, [1]);
+	});
+	await test('YKT chapter completion counts platform-confirmed submissions and leaves prior answers alone', async () => {
+		for (const confirmation of ['graded', 'ungraded'] as const) {
+			const report = await chapterAssignment({ finish: true, confirmation });
+			assert.equal(report.attempts, 1);
+			assert.equal(report.clicks, 1);
+			assert.deepEqual(report.warnings, []);
+			assert.match(report.success[0], /本次确认提交 1 题/);
+		}
+		const alreadySubmitted = await chapterAssignment({ alreadySubmitted: true });
+		assert.equal(alreadySubmitted.attempts, 0);
+		assert.equal(alreadySubmitted.clicks, 0);
+		assert.match(alreadySubmitted.success[0], /本次确认提交 0 题/);
+	});
+	await test('YKT chapter completion stays pending after skip, miss, failed submit, or closure', async () => {
+		for (const input of [{ skipped: true }, {}, { finish: true }, { finish: true, closeDuringWork: true }]) {
+			const report = await chapterAssignment(input);
+			assert.equal(report.attempts, 1);
+			assert.equal(report.clicks, input.finish && !input.closeDuringWork ? 2 : 0);
+			assert.deepEqual(report.success, []);
+			assert.match(report.warnings[0], /本次确认提交 0\/1 题/);
+		}
+	});
+	await test('YKT chapter with missing navigation never reports submission success', async () => {
+		const report = await chapterAssignment({ noNavigation: true });
+		assert.equal(report.attempts, 0);
+		assert.equal(report.clicks, 0);
+		assert.deepEqual(report.success, []);
+		assert.equal(report.warnings.length, 1);
 	});
 	await test('upstream smart final-tab navigation no longer invokes two navigation mechanisms', async () => {
 		assert.deepEqual(await navigation('job', true), ['chapterClick']);

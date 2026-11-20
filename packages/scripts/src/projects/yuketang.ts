@@ -306,8 +306,6 @@ export const YKTProject = Project.create({
 												}
 											});
 										});
-
-										$message.success('作业任务点答题完成。');
 									}
 								}
 							}
@@ -1106,7 +1104,7 @@ async function runYktAnswerLoop(
 	worker: OCSWorker<any>,
 	questionRootRef: HTMLElement[],
 	doc: Document
-): Promise<{ results: WorkResult<any>[]; completedAll: boolean }> {
+): Promise<{ results: WorkResult<any>[]; completedAll: boolean; submittedCount: number }> {
 	const allResults: WorkResult<any>[] = [];
 	try {
 		// 答题依赖解密后的明文，无论字体解密脚本是否开启都要确保启动
@@ -1119,22 +1117,15 @@ async function runYktAnswerLoop(
 	// （否则可能把已提交的正确答案改错）：
 	//   1. 含 .icon-status 图标标记（success=已提交且正确，danger=已提交但错误）
 	//   2. 含"未批改"文本状态（.text-status，已作答待批改——无 .icon-status，需按文本排除）
-	const getUnfinishedNavItems = () =>
-		Array.from(doc.querySelectorAll<HTMLElement>('.problems-aside .subject-item.J_order')).filter((el) => {
-			if (el.querySelector('.icon-status')) {
-				return false;
-			}
-			if (el.querySelector('.text-status')?.textContent?.includes('未批改')) {
-				return false;
-			}
-			return true;
-		});
+	const isUnfinished = (item: HTMLElement) =>
+		!item.querySelector('.icon-status') && !item.querySelector('.text-status')?.textContent?.includes('未批改');
 
 	// 已处理的题号（按 data-order 记录，不依赖平台状态刷新，防重复作答）
 	const processedOrders = new Set<string>();
 	const processedMarkers = new Set<string>();
 	let prevMarker: string | null = null;
 	let completedAll = false;
+	let submittedCount = 0;
 	while (worker.isClose === false) {
 		// 风控验证码检测：每次切题（点击下一题/题号）后、作答前执行，
 		// 出现 #homework-automation-risk-challenge 时挂起等待用户手动完成验证
@@ -1143,11 +1134,11 @@ async function runYktAnswerLoop(
 			break;
 		}
 		// 每轮重新计算未完成列表（提交后平台会更新状态标记）
-		const unfinished = getUnfinishedNavItems().filter(
-			(el) => !processedOrders.has(el.getAttribute('data-order') ?? '')
-		);
+		const navItems = Array.from(doc.querySelectorAll<HTMLElement>('.problems-aside .subject-item.J_order'));
+		const remaining = navItems.filter(isUnfinished);
+		const unfinished = remaining.filter((el) => !processedOrders.has(el.getAttribute('data-order') ?? ''));
 		if (unfinished.length === 0) {
-			completedAll = true;
+			completedAll = navItems.length > 0 && remaining.length === 0;
 			break;
 		}
 		// 当前激活的未完成题优先作答，否则点击切换到第一个未完成题
@@ -1183,11 +1174,14 @@ async function runYktAnswerLoop(
 		try {
 			const results = await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
 			allResults.push(...results);
+			if (worker.isClose) break;
 			const finished = !!results[0]?.result?.finish;
 			// 平台切换题目不会保存答案，必须每题作答后立即提交
 			if (finished) {
 				const submitted = await submitYktCurrentQuestion(doc, order);
-				if (!submitted) {
+				if (submitted) {
+					submittedCount++;
+				} else {
 					$console.warn(`[answer] 本题提交失败: ${marker}`);
 				}
 			}
@@ -1199,7 +1193,7 @@ async function runYktAnswerLoop(
 			break;
 		}
 	}
-	return { results: allResults, completedAll };
+	return { results: allResults, completedAll, submittedCount };
 }
 
 /**
@@ -1214,19 +1208,18 @@ function createYktEmbeddedWorkLoop(opts: CommonWorkOptions, doc: Document, onDon
 	const { worker, questionRootRef } = createYktAnswerWorker(opts);
 	dynamicWorkTips(worker);
 	(async () => {
-		const { results, completedAll } = await runYktAnswerLoop(worker, questionRootRef, doc);
+		const { results, completedAll, submittedCount } = await runYktAnswerLoop(worker, questionRootRef, doc);
 		worker.emit('done');
 
 		// 平台切换题目不会保存答案，作答循环中已逐题提交。
 		// 未全部完成时给出醒目提示，由用户手动处理剩余题目
-		const finishCount = results.filter((r) => r.result?.finish).length;
 		if (!completedAll) {
 			$message.warn({
-				content: `题目未全部完成（已作答提交 ${finishCount}/${results.length} 题），请手动检查剩余题目。`,
+				content: `题目未全部完成（本次确认提交 ${submittedCount}/${results.length} 题），请手动检查剩余题目。`,
 				duration: 60
 			});
 		} else {
-			$message.success({ content: `作业完成，全部 ${finishCount} 题已作答并逐题提交。` });
+			$message.success({ content: `作业已全部提交，本次确认提交 ${submittedCount} 题。` });
 		}
 		onDone();
 	})();
