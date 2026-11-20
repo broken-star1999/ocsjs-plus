@@ -92,6 +92,8 @@ export interface WorkResult<E extends RawElements> {
  * 为什么不直接用 {@link WorkResult} ，因为对象里太多嵌套对象，一旦结果超过10个以上，可能导致 I/O 变慢，并且页面卡顿。
  */
 export interface SimplifyWorkResult {
+	/** Owning-page operation scope for this published result row. */
+	actionScope?: { id: string; frame: string };
 	/** Local callback, removed by the scripts layer before storing results. */
 	_confirmReview?: ReviewControl;
 	_skip?: () => Promise<void>;

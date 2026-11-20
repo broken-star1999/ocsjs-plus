@@ -2787,40 +2787,48 @@ function gxkWorkAndExam(
 				return;
 			}
 			$message.info({
-				content: `本次处理结束，${stopSecondWhenFinish} 秒后保存已填写或确认的 ${finished.length} 道题。`
+				content: `本次填写结束，${stopSecondWhenFinish} 秒后尝试保存已填写或确认的 ${finished.length} 道题。`
 			});
 			await $.sleep(stopSecondWhenFinish * 1000);
-			// @ts-ignore
-			if (worker.isClose === true) {
-				return;
-			}
 			/**
 			 * 保存题目，不在选择答案后保存的原因是，如果答题线程大于3会导致题目错乱，因为 resolverIndex 并不是顺序递增的
 			 */
+			let saveUnavailable = 0;
 			for (const [saved, index] of finished.entries()) {
-				// @ts-ignore
-				if (worker.isClose === true) {
-					return;
-				}
+				if (worker.isClose) return;
 				const modal = $modal.alert({
 					title: '⚠️提示',
-					content: `正在自动保存已填写或确认的题目。<br>当前进度 ${saved}/${finished.length}<br>保存完毕前请勿操作。`,
+					content: `正在逐题尝试触发页面保存。<br>当前进度 ${saved}/${finished.length}<br>处理期间请勿操作。`,
 					confirmButton: null,
 					maskCloseable: false
 				});
-				await waitForCaptcha();
-				await $.sleep(2000);
-				// 跳转到该题目，防止用户在保存时切换题目
-				document.querySelectorAll<HTMLElement>('.answerCard_list ul li').item(index)?.click();
-				await $.sleep(200);
-				// 下一页
-				const next = $el('div.examPaper_box > div.switch-btn-box > button:nth-child(2)');
-				if (next) {
+				try {
+					await waitForCaptcha();
+					await $.sleep(2000);
+					if (worker.isClose) return;
+					// 跳转到该题目，防止用户在保存时切换题目
+					const question = document.querySelectorAll<HTMLElement>('.answerCard_list ul li').item(index);
+					if (!question || question.matches('[aria-disabled="true"]')) {
+						saveUnavailable++;
+						continue;
+					}
+					question.click();
+					await $.sleep(200);
+					if (worker.isClose) return;
+					const next = document.querySelector<HTMLButtonElement>(
+						'div.examPaper_box > div.switch-btn-box > button:nth-child(2)'
+					);
+					if (!next || next.matches(':disabled,[aria-disabled="true"]')) {
+						saveUnavailable++;
+						continue;
+					}
 					next.click();
-				} else {
-					$console.error('未找到下一页按钮。');
+				} finally {
+					modal?.remove();
 				}
-				modal?.remove();
+			}
+			if (saveUnavailable > 0) {
+				$message.warn({ content: `${saveUnavailable} 道题未能触发页面保存，请在原页面核对并保存。`, duration: 0 });
 			}
 			announceZhsWorkEnd(unfinished, 0);
 			worker.emit('done');

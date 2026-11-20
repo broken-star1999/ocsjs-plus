@@ -1,8 +1,11 @@
 import {
 	AnswererWrapper,
 	SearchInformation,
+	StringUtils,
 	WorkContext,
 	createDefaultQuestionResolver,
+	normalizeStringKeepSign,
+	removeRedundant,
 	resolveMultiple,
 	resolvePlainAnswer,
 	splitAnswer
@@ -90,22 +93,32 @@ export async function matchBankAnswer(
 	const { type } = ctx;
 	const options = (ctx.elements.options || []).filter((option): option is HTMLElement => !!option);
 	if (!type || !['single', 'multiple', 'judgement', 'completion'].includes(type) || !options.length) return;
-	// The legacy multi-choice resolver accepts the valid part of an out-of-range letter combination.
-	// A partial match must still allow a later bank to provide the entire answer.
 	if (type === 'multiple') {
 		const texts = options.map(optionText);
 		infos = infos.map((info) => ({
 			...info,
 			results: info.results.filter(({ answer }) => {
-				const choice = resolvePlainAnswer(answer);
-				if (choice && [...choice].some((letter) => letter.charCodeAt(0) - 65 >= options.length)) return false;
 				const match = resolveMultiple([answer], texts, ctx.answerSeparators);
-				const matchedAnswers = match.groups?.[0]?.answers;
+				if (!match.finish) return false;
+				const group = match.groups?.[0];
 				const parts = splitAnswer(answer, ctx.answerSeparators);
-				return (
-					match.finish &&
-					(!matchedAnswers || parts.length === 1 || parts.every((part) => matchedAnswers.includes(part)))
-				);
+				const choice = resolvePlainAnswer(StringUtils.nowrap(answer, ''));
+				if (choice && [...choice].some((letter) => letter.charCodeAt(0) - 65 >= options.length)) {
+					// An apparent letter combination may be actual option text (e.g. DNS).
+					// Accept it only when every selected option matches a complete answer part.
+					return (
+						group?.options.length === parts.length &&
+						parts.every((part) => group.answers.includes(part)) &&
+						group.options.every((option, index) => {
+							const answerText = normalizeStringKeepSign(group.answers[index]);
+							return (
+								answerText === normalizeStringKeepSign(option) ||
+								answerText === normalizeStringKeepSign(removeRedundant(option))
+							);
+						})
+					);
+				}
+				return !group || parts.length === 1 || parts.every((part) => group.answers.includes(part));
 			})
 		}));
 	}

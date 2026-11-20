@@ -10,6 +10,7 @@ import {
 	createUnansweredQuestionControl,
 	registerReviewActions,
 	requestReviewAction,
+	reconcileWorkResultActions,
 	serializeManualReview
 } from '../packages/scripts/src/utils/question-retry-control';
 
@@ -353,11 +354,12 @@ async function main() {
 		};
 		try {
 			const remote = { ...stored.skipControl!, frame: 'owner-frame' };
-			current = [];
-			await assert.rejects(requestReviewAction(remote), /跳过入口已失效/);
-			assert.equal(skipped, 0);
-			current = [stored];
+			reconcileWorkResultActions(current);
 			await requestReviewAction(remote);
+			assert.equal(skipped, 1);
+			current = [];
+			reconcileWorkResultActions(current);
+			await assert.rejects(requestReviewAction(remote), /跳过入口已失效/);
 			assert.equal(skipped, 1);
 			assert.equal(createUnansweredQuestionControl({ ...stored, skipped: true }), undefined);
 			assert.equal(serializeManualReview({ ...row, resolved: false }).skipControl, undefined);
