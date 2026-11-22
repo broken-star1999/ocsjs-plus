@@ -2779,26 +2779,25 @@ function gxkWorkAndExam(
 			if (worker.isClose === true) {
 				return;
 			}
-			const finished = res.flatMap(({ result }, index) => (result?.finish ? [index] : []));
-			const unfinished = res.length - finished.length;
-			if (!finished.length) {
+			const unfinished = countUnfinishedZhsQuestions(res);
+			if (unfinished === res.length) {
 				announceZhsWorkEnd(unfinished, 0);
 				worker.emit('done');
 				return;
 			}
 			$message.info({
-				content: `本次填写结束，${stopSecondWhenFinish} 秒后尝试保存已填写或确认的 ${finished.length} 道题。`
+				content: `本次填写结束，${stopSecondWhenFinish} 秒后按题卡顺序尝试保存。`
 			});
 			await $.sleep(stopSecondWhenFinish * 1000);
 			/**
-			 * 保存题目，不在选择答案后保存的原因是，如果答题线程大于3会导致题目错乱，因为 resolverIndex 并不是顺序递增的
+			 * 按上游顺序遍历题卡，避免填写结果改变平台的保存顺序。
 			 */
 			let saveUnavailable = 0;
-			for (const [saved, index] of finished.entries()) {
+			for (let index = 0; index < worker.totalQuestionCount; index++) {
 				if (worker.isClose) return;
 				const modal = $modal.alert({
 					title: '⚠️提示',
-					content: `正在逐题尝试触发页面保存。<br>当前进度 ${saved}/${finished.length}<br>处理期间请勿操作。`,
+					content: `正在逐题尝试触发页面保存。<br>当前进度 ${index}/${worker.totalQuestionCount}<br>处理期间请勿操作。`,
 					confirmButton: null,
 					maskCloseable: false
 				});
