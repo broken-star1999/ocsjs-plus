@@ -14,8 +14,9 @@ import { CommonEvents, CommonProject } from '../projects/common';
 import { $console, BackgroundProject } from '../projects/background';
 import { CommonWorkOptions } from '.';
 import { createIframeControlSession } from './iframe-control-bar';
-import { registerQuestionRetry, registerManualReview, registerReviewActions } from './question-retry-control';
+import { registerWorkResultActions } from './question-retry-control';
 import { inspectAIWorkConfiguration } from './ai-work-status';
+import { matchBankAnswer, searchBanksThenAI, unavailableBankFallback } from './bank-fallback';
 import {
 	buildAnswererEnv,
 	createAnswererWrappersSignature,
@@ -292,23 +293,34 @@ export function commonWork(options: {
 		// 子 iframe 操控会话：worker 创建后激活（渲染操控条到顶层 $elements.root）
 		iframeControl?.activate();
 
-		if (state.worker) {
+		const worker = state.worker;
+		if (worker) {
 			const emitState = CommonEvents.emitWorkerStateChange;
+			let closed = false;
 			emitState('start');
-			state.worker.on('stop', () => emitState('stop'));
+			worker.on('stop', () => {
+				if (!closed && state.worker === worker) emitState('stop');
+			});
 			// 恢复答题视为重新开始工作（isWorkerWorking=true，气泡重新显示）
-			state.worker.on('continuate', () => emitState('start'));
-			state.worker.once('close', () => {
+			worker.on('continuate', () => {
+				if (!closed && state.worker === worker) emitState('start');
+			});
+			worker.once('close', () => {
+				closed = true;
+				if (state.worker !== worker) return;
 				emitState('close');
 				iframeControl?.dispose();
 			});
-			state.worker.once('done', () => {
+			worker.once('done', () => {
+				if (state.worker !== worker) return;
 				state.running = false;
 				state.controlPanel = null;
 				state.paused = false;
 				controlBtn.disabled = true;
-				emitState('done');
-				iframeControl?.finish();
+				if (!closed) {
+					emitState('done');
+					iframeControl?.finish();
+				}
 			});
 		}
 	};
@@ -324,8 +336,24 @@ export function dynamicWorkTips(worker: CommonEventEmitter<WorkerEvents>) {
 		content: '⚠️ 正在逐题自动答题，过程中请勿手动切换题目，防止答题与搜索结果错乱。',
 		duration: 0
 	});
-	worker.once('done', () => msg?.remove());
-	worker.once('close', () => msg?.remove());
+	const emitState = CommonEvents.emitWorkerStateChange;
+	emitState('start');
+	const pause = () => emitState('stop');
+	const resume = () => emitState('start');
+	worker.on('stop', pause);
+	worker.on('continuate', resume);
+	const finish = (state: 'done' | 'close') => {
+		worker.removeListener('stop', pause);
+		worker.removeListener('continuate', resume);
+		worker.removeListener('done', onDone);
+		worker.removeListener('close', onClose);
+		msg?.remove();
+		emitState(state);
+	};
+	const onDone = () => finish('done');
+	const onClose = () => finish('close');
+	worker.once('done', onDone);
+	worker.once('close', onClose);
 }
 
 /**
@@ -524,9 +552,9 @@ export function simplifyWorkResult(
 			.join('<br>') ||
 		'';
 	return {
-		reviewControl: wr.confirmReview ? registerManualReview(wr, wr.confirmReview) : undefined,
-		reviewActions: registerReviewActions(wr),
-		retry: registerQuestionRetry(wr),
+		...registerWorkResultActions(wr),
+		_skip: wr.skip,
+		skipped: wr.skipped,
 		retrying: wr.retrying,
 		requested: wr.requested,
 		searching: wr.searching,
@@ -611,6 +639,11 @@ interface AnswererTextResult {
 export function createCommonAnswerer(options: {
 	titleTransform: (elements: any, ctx: WorkContext<any>) => string | { text: string; images?: string[] };
 	optionsTransform?: (elements: any, ctx: WorkContext<any>) => string | AnswererTextResult;
+	bankTitleTransform?: (elements: any, ctx: WorkContext<any>) => string | { text: string; images?: string[] };
+	bankOptionsTransform?: (elements: any, ctx: WorkContext<any>) => string | AnswererTextResult;
+	bankOptionText?: (option: HTMLElement, index: number, ctx: WorkContext<any>) => string;
+	/** Platform-specific match; null is a miss and undefined leaves the default resolver in charge. */
+	bankMatch?: (ctx: WorkContext<any>, infos: SearchInformation[]) => SearchInformation[] | null | undefined;
 	answererWrappers: AnswererWrapper[];
 	period?: number;
 	/** Plus adapters may prepare cloned AI payloads and trusted retry baselines before extraction. */
@@ -625,14 +658,17 @@ export function createCommonAnswerer(options: {
 	/** 降级提示仅每次会话提示一次，避免逐题刷屏 */
 	let imageOptimizeOffWarned = false;
 	let imageConvertFailWarned = false;
+	const fallback = options.answererWrappers.length === 1 ? options.answererWrappers[0] : undefined;
+	const banks = fallback?.fallbackBanks;
 
 	return async (elements: any, ctx: WorkContext<any>): Promise<SearchInformation[]> => {
 		const ensembles = options.answererWrappers.flatMap((wrapper) => (wrapper.aiEnsemble ? [wrapper.aiEnsemble] : []));
 		const basicModels = options.answererWrappers.flatMap((wrapper) => (wrapper.ai ? [wrapper.ai] : []));
-		if (ensembles.length || basicModels.length) {
+		if (ensembles.length || basicModels.length || banks?.length) {
 			const timeout = (config: { timeoutSeconds?: number }) =>
 				Math.min(180_000, Math.max(1000, (config.timeoutSeconds ?? AnswerWrapperHandlerConfig.timeout_seconds) * 1000));
 			const budget = Math.max(
+				0,
 				...basicModels.map(timeout),
 				...ensembles.map(
 					(config) =>
@@ -643,7 +679,8 @@ export function createCommonAnswerer(options: {
 				)
 			);
 			// 图片准备、搜题间隔和顺序总结都必须在解析器的等待窗口内。
-			ctx.searchDeadline = Date.now() + budget + 60_000 + (options.period ?? 1) * 1000;
+			const bankBudget = (banks?.length || 0) * AnswerWrapperHandlerConfig.timeout_seconds * 1000;
+			ctx.searchDeadline = Date.now() + bankBudget + budget + 60_000 + (options.period ?? 1) * 1000;
 		}
 		// 搜题前置钩子（如等待字体解密完成），必须在提取题目前执行
 		if (options.beforeSearch && ctx.prepareForRetry && !ctx.forceSearch) {
@@ -651,35 +688,36 @@ export function createCommonAnswerer(options: {
 		} else {
 			await options.beforeSearch?.(ctx);
 		}
-		const titleResult = normalize(options.titleTransform(elements, ctx));
-		const title = titleResult.text;
-		if (!title) {
+		const firstTitle = normalize(
+			((banks?.length && options.bankTitleTransform) || options.titleTransform)(elements, ctx)
+		);
+		if (!firstTitle.text && !banks?.length) {
 			throw new Error('题目为空，请查看题目是否为空，或者忽略此题');
 		}
-		const titleImages = titleResult.images;
 
-		const search = async () => {
-			const assertActive = async () => {
-				await ctx.waitUntilActive?.();
-				if (ctx.isClosed?.()) throw new Error('原答题任务已关闭，已停止搜题。');
-			};
-			await $.sleep((options.period ?? 1) * 1000);
-			await assertActive();
-			const defaultOptions: HTMLElement[] | undefined = !options.optionsTransform
+		const assertActive = async () => {
+			await ctx.waitUntilActive?.();
+			if (ctx.isClosed?.()) throw new Error('原答题任务已关闭，已停止搜题。');
+		};
+		const readOptions = (transform: typeof options.optionsTransform) => {
+			const defaultOptions: HTMLElement[] | undefined = !transform
 				? (ctx.elements.options ?? []).filter((option): option is HTMLElement => !!option)
 				: undefined;
 			const defaultItems =
 				defaultOptions && ['single', 'multiple', 'judgement'].includes(ctx.type || '')
 					? defaultOptions.map((option) => extractTextWithImages(option))
 					: undefined;
-			const optResult = normalize(
-				options.optionsTransform
-					? options.optionsTransform(elements, ctx)
+			return normalize(
+				transform
+					? transform(elements, ctx)
 					: {
 							text: defaultOptions!.map((option) => option.innerText).join('\n'),
 							...(defaultItems ? { images: defaultItems.flatMap((item) => item.images), items: defaultItems } : {})
 					  }
 			);
+		};
+		const prepare = async ({ text: title, images: titleImages }: AnswererTextResult, optResult: AnswererTextResult) => {
+			if (!title) throw new Error('题目为空，请查看题目是否为空，或者忽略此题');
 			const questionHasImages =
 				(titleImages?.length ?? 0) + (optResult.images?.length ?? 0) > 0 ||
 				QUESTION_IMAGE_REGEX.test(title) ||
@@ -721,9 +759,16 @@ export function createCommonAnswerer(options: {
 			if (ctx.onSearchProgress) env.onProgress = (info: SearchInformation) => ctx.onSearchProgress!([info]);
 			// The same task gate must also reach a summary started after participant calls settle.
 			env.beforeRequest = assertActive;
+			return { env, imageUrls };
+		};
+		const query = async (
+			wrappers: AnswererWrapper[],
+			{ env, imageUrls }: Awaited<ReturnType<typeof prepare>>,
+			serialBank = false
+		) => {
 			// Pausing/closing during image preparation must prevent a new paid request.
 			await assertActive();
-			const searchInfos = await defaultAnswerWrapperHandler(options.answererWrappers, env);
+			const searchInfos = await defaultAnswerWrapperHandler(wrappers, { ...env }, { cancelOnTimeout: serialBank });
 			// 将 AI 答案中的 [图片N] 占位符还原为对应图片 URL，使选项匹配可以命中图片选项。
 			// imageUrls 与实际上传的 env.images 严格同序（createImageSuggestion 单一数据源，含转换失败过滤）。
 			// 覆盖服务端未还原的场景：标题图占位符 / 选项行数不对齐 / 第三方题库。
@@ -736,7 +781,7 @@ export function createCommonAnswerer(options: {
 								answer.replace(/\[图片(\d+)\]/g, (m, n) => imageUrls[Number(n) - 1] ?? m)
 							);
 						}
-						if (res.answer && res.answer.includes('[图片')) {
+						if (typeof res.answer === 'string' && res.answer.includes('[图片')) {
 							res.answer = res.answer.replace(/\[图片(\d+)\]/g, (m, n) => imageUrls[Number(n) - 1] ?? m);
 						}
 					}
@@ -744,11 +789,46 @@ export function createCommonAnswerer(options: {
 			}
 			return searchInfos;
 		};
+		const search = async () => {
+			await $.sleep((options.period ?? 1) * 1000);
+			await assertActive();
+			const firstOptions = readOptions((banks?.length && options.bankOptionsTransform) || options.optionsTransform);
+			if (!banks?.length || !fallback) return query(options.answererWrappers, await prepare(firstTitle, firstOptions));
+
+			const bankInput = firstTitle.text ? await prepare(firstTitle, firstOptions) : undefined;
+			return searchBanksThenAI(
+				banks,
+				(bank) => (bankInput ? query([bank], bankInput, true) : Promise.resolve([])),
+				async (infos) => {
+					await assertActive();
+					const matched = options.bankMatch?.(ctx, infos);
+					if (matched !== undefined) return matched || undefined;
+					return matchBankAnswer(ctx, infos, (option, index) =>
+						options.bankOptionText
+							? options.bankOptionText(option, index, ctx)
+							: firstOptions.items?.[index]?.text ?? option.innerText ?? extractTextWithImages(option).text
+					);
+				},
+				async () => {
+					await assertActive();
+					if (!fallback.ai && !fallback.aiEnsemble) return unavailableBankFallback();
+					const aiTitle = options.bankTitleTransform ? normalize(options.titleTransform(elements, ctx)) : firstTitle;
+					const aiOptions = options.bankOptionsTransform ? readOptions(options.optionsTransform) : firstOptions;
+					const input =
+						!options.bankTitleTransform && !options.bankOptionsTransform && bankInput
+							? bankInput
+							: await prepare(aiTitle, aiOptions);
+					return query([fallback], input);
+				}
+			);
+		};
 		// Upstream cache keys only contain the title; AI also depends on options/model/images.
 		// Bypass that cache to prevent an old answer or another course's options being reused.
-		return ctx.forceSearch || options.answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble)
+		return ctx.forceSearch ||
+			banks?.length ||
+			options.answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble)
 			? search()
-			: BackgroundProject.scripts.data.methods.searchAnswerInCaches(title, search);
+			: BackgroundProject.scripts.data.methods.searchAnswerInCaches(firstTitle.text, search);
 	};
 }
 

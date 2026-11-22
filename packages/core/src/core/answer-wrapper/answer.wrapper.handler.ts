@@ -70,7 +70,8 @@ export async function defaultAnswerWrapperHandler(
 		 */
 		suggestion_options?: string;
 		[x: string]: any;
-	}
+	},
+	options?: { cancelOnTimeout?: boolean }
 ): Promise<SearchInformation[]> {
 	const searchInfos: SearchInformation[] = [];
 	const temp: AnswererWrapper[] = JSON.parse(JSON.stringify(answererWrappers));
@@ -174,17 +175,17 @@ export async function defaultAnswerWrapperHandler(
 				}
 
 				// 发送请求
-				const responseData = await Promise.race([
-					request(url.toString(), {
-						method,
-						// contentType: 历史遗留的命名问题
-						responseType: responseType || contentType,
-						data: requestData,
-						type,
-						headers: JSON.parse(JSON.stringify(headers || {}))
-					}),
-					$.sleep((AnswerWrapperHandlerConfig.timeout_seconds ?? 60) * 1000)
-				]);
+				const timeout = (AnswerWrapperHandlerConfig.timeout_seconds ?? 60) * 1000;
+				const pending = request(url.toString(), {
+					method,
+					// contentType: 历史遗留的命名问题
+					responseType: responseType || contentType,
+					data: requestData,
+					type,
+					headers: JSON.parse(JSON.stringify(headers || {})),
+					timeoutMs: options?.cancelOnTimeout ? timeout : undefined
+				});
+				const responseData = options?.cancelOnTimeout ? await pending : await Promise.race([pending, $.sleep(timeout)]);
 				if (responseData === undefined) {
 					throw new Error('题库请求超时，可能是题库问题，或者请检查网络或者重试。');
 				}

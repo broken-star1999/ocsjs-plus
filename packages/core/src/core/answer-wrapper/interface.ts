@@ -28,6 +28,8 @@ export interface SearchInformation {
  * 题库配置器
  */
 export interface AnswererWrapper {
+	/** Ordered traditional banks generated from the local settings for an AI fallback task. */
+	fallbackBanks?: AnswererWrapper[];
 	/** Selected independent models; credentials stay in provider-scoped storage. */
 	aiEnsemble?: import('./ai-ensemble').AIEnsembleConfig;
 	/** Native AI adapter configuration. API keys are never stored in wrappers. */

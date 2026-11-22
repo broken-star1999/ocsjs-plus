@@ -3,6 +3,7 @@ import { createDefaultQuestionResolver } from './question.resolver';
 import { domSearchAll } from '../utils/dom';
 import { QuestionTypes, RawElements, WorkContext, WorkResult } from './interface';
 import { needsAIReview, requireAIReview } from '../answer-wrapper/ai-ensemble';
+import { createAIReviewControl } from './ai-review-queue';
 
 // 同一 DOM 被一个新任务接管后，即使旧 worker 没有收到 close，也不能再写回旧结果。
 const owners = new WeakMap<HTMLElement, object>();
@@ -123,7 +124,12 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 					throw new Error('原答题任务已失效，请重新开始答题。');
 				const previousInfos = result.ctx?.searchInfos || [];
 				const previousReview = result.confirmReview?.pending?.() ? result.confirmReview : undefined;
-				if (busy || (worker.isRunning && !previousReview) || results.some((item) => !item.resolved)) {
+				if (
+					busy ||
+					result.skip?.inProgress?.() ||
+					(worker.isRunning && !previousReview) ||
+					results.some((item) => !item.resolved)
+				) {
 					throw new Error('请等待当前答题任务或单题重做结束后再操作。');
 				}
 				if (candidate) {
@@ -151,6 +157,7 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 				result.requested = !!candidate;
 				result.resolved = false;
 				result.result = undefined;
+				result.skipped = undefined;
 				result.confirmReview = previousReview;
 				result.error = undefined;
 				result.ctx = ctx;
@@ -198,47 +205,39 @@ export function enableSingleQuestionRetry<E extends RawElements>(
 						if (ctx.searchInfos.some((info) => info.ensemble)) {
 							if (!needsAIReview(ctx.searchInfos))
 								requireAIReview(ctx.searchInfos, '模型答案一致，但无法匹配页面，等待人工评判。');
-							let confirmed = false;
-							const confirm = async () => {
-								assertCurrent();
-								if (result.retrying || busy || confirmed) throw new Error('本次人工确认已失效或仍在处理。');
-								const infosNow = result.ctx?.searchInfos || [];
-								const previous = { result: result.result, error: result.error };
-								const infos = infosNow
-									.filter((info) => info.ensemble)
-									.map((info) => ({ info, reason: info.ensemble!.reason, error: info.error }));
-								for (const info of infosNow)
-									if (info.ensemble) {
-										info.ensemble.status = 'confirmed';
-										info.ensemble.reason = '用户已在原题人工处理并确认。';
-										info.error = undefined;
-									}
-								confirmed = true;
-								result.result = { finish: true, manual: true };
-								result.error = undefined;
-								busy = true;
-								try {
-									await originalUpdate?.(result, questionIndex, results);
-								} catch (error) {
-									confirmed = false;
-									Object.assign(result, previous);
-									for (const entry of infos) {
-										entry.info.ensemble!.status = 'review';
-										entry.info.ensemble!.reason = entry.reason;
-										entry.info.error = entry.error;
-									}
-									throw error;
-								} finally {
-									busy = false;
-								}
-							};
 							result.confirmReview =
 								previousReview ||
-								Object.assign(confirm, {
-									complete: () => {
-										confirmed = true;
+								createAIReviewControl({
+									infos: () => result.ctx?.searchInfos || [],
+									isClosed: () => closed || worker.isClose || currentGeneration !== generation,
+									validate: () => {
+										assertCurrent();
+										if (result.retrying || busy) throw new Error('本题正在重新请求或采用候选，请等待操作完成。');
 									},
-									pending: () => !confirmed && !closed && !worker.isClose && !busy
+									onDecision: async (decision) => {
+										const previous = {
+											result: result.result,
+											error: result.error,
+											skipped: result.skipped,
+											confirmReview: result.confirmReview
+										};
+										if (decision === 'skipped') {
+											result.skipped = true;
+											result.confirmReview = undefined;
+										} else {
+											result.result = { finish: true, manual: true };
+											result.error = undefined;
+										}
+										busy = true;
+										try {
+											await originalUpdate?.(result, questionIndex, results);
+										} catch (error) {
+											Object.assign(result, previous);
+											throw error;
+										} finally {
+											busy = false;
+										}
+									}
 								});
 						}
 						throw new Error(

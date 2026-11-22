@@ -483,6 +483,11 @@ container-element.normal {
 		}
 	}
 
+	&.skipped {
+		border: 1px dashed #868e96;
+		color: #495057;
+	}
+
 	&.active {
 		background-color: @primary !important;
 		color: white;
@@ -578,7 +583,7 @@ search-infos-element {
 }
 
 .work-result-list {
-	max-height: 400px;
+	max-height: 110px;
 	overflow: auto;
 	// 上下留白：防止首尾行序号的边框转圈特效触碰滚动容器边缘而出现滚动条/被裁剪
 	padding: 4px 0px;

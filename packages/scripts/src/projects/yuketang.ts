@@ -5,6 +5,7 @@ import {
 	createDefaultQuestionResolver,
 	defaultWorkTypeResolver,
 	WorkResult,
+	WorkContext,
 	resolveJudgement,
 	QuestionTypes
 } from '@ocsjs/core';
@@ -305,8 +306,6 @@ export const YKTProject = Project.create({
 												}
 											});
 										});
-
-										$message.success('作业任务点答题完成。');
 									}
 								}
 							}
@@ -875,23 +874,27 @@ function createYktAnswerWorker({
 		return extractTextWithImages(cloneYktForTextExtract((textEl as HTMLElement) ?? option));
 	};
 	const optionText = (option: HTMLElement) => optionExtract(option).text;
+	const optionsTransform = (elements: any, ctx: WorkContext<any>, forAI: boolean) => {
+		ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
+		if (ctx.type === 'completion') return '';
+		const items = (elements.options ?? []).map((option: HTMLElement) => {
+			const input = option.querySelector('input');
+			if (!forAI || input?.value === 'true' || input?.value === 'false') return optionExtract(option);
+			return extractYktAIContent((option.querySelector('.radioText, .checkboxText') as HTMLElement) ?? option);
+		});
+		return {
+			text: items.map((item: { text: string }) => item.text).join('\n'),
+			images: items.flatMap((item: { images: string[] }) => item.images),
+			items
+		};
+	};
 	const createAnswerer = (wrappers: CommonWorkOptions['answererWrappers'], forAI: boolean) =>
 		createCommonAnswerer({
 			titleTransform: (elements) => (forAI ? aiTitleExtract(elements.title) : titleTransform(elements.title)),
-			optionsTransform: (elements, ctx) => {
-				ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
-				if (ctx.type === 'completion') return '';
-				const items = (elements.options ?? []).map((option: HTMLElement) => {
-					const input = option.querySelector('input');
-					if (!forAI || input?.value === 'true' || input?.value === 'false') return optionExtract(option);
-					return extractYktAIContent((option.querySelector('.radioText, .checkboxText') as HTMLElement) ?? option);
-				});
-				return {
-					text: items.map((item: { text: string }) => item.text).join('\n'),
-					images: items.flatMap((item: { images: string[] }) => item.images),
-					items
-				};
-			},
+			optionsTransform: (elements, ctx) => optionsTransform(elements, ctx, forAI),
+			bankTitleTransform: forAI ? (elements) => titleTransform(elements.title) : undefined,
+			bankOptionsTransform: forAI ? (elements, ctx) => optionsTransform(elements, ctx, false) : undefined,
+			bankOptionText: optionText,
 			answererWrappers: wrappers,
 			period
 		});
@@ -1008,7 +1011,7 @@ function createYktAnswerWorker({
 		},
 		onResultsUpdate(current, _, res) {
 			// 逐题更新搜索结果面板（等待搜索中→等待答题中→已答题/失败）
-			updateDynamicResult(current, titleTransform);
+			return updateDynamicResult(current, titleTransform);
 		}
 	});
 
@@ -1101,7 +1104,7 @@ async function runYktAnswerLoop(
 	worker: OCSWorker<any>,
 	questionRootRef: HTMLElement[],
 	doc: Document
-): Promise<{ results: WorkResult<any>[]; completedAll: boolean }> {
+): Promise<{ results: WorkResult<any>[]; completedAll: boolean; submittedCount: number }> {
 	const allResults: WorkResult<any>[] = [];
 	try {
 		// 答题依赖解密后的明文，无论字体解密脚本是否开启都要确保启动
@@ -1114,22 +1117,15 @@ async function runYktAnswerLoop(
 	// （否则可能把已提交的正确答案改错）：
 	//   1. 含 .icon-status 图标标记（success=已提交且正确，danger=已提交但错误）
 	//   2. 含"未批改"文本状态（.text-status，已作答待批改——无 .icon-status，需按文本排除）
-	const getUnfinishedNavItems = () =>
-		Array.from(doc.querySelectorAll<HTMLElement>('.problems-aside .subject-item.J_order')).filter((el) => {
-			if (el.querySelector('.icon-status')) {
-				return false;
-			}
-			if (el.querySelector('.text-status')?.textContent?.includes('未批改')) {
-				return false;
-			}
-			return true;
-		});
+	const isUnfinished = (item: HTMLElement) =>
+		!item.querySelector('.icon-status') && !item.querySelector('.text-status')?.textContent?.includes('未批改');
 
 	// 已处理的题号（按 data-order 记录，不依赖平台状态刷新，防重复作答）
 	const processedOrders = new Set<string>();
 	const processedMarkers = new Set<string>();
 	let prevMarker: string | null = null;
 	let completedAll = false;
+	let submittedCount = 0;
 	while (worker.isClose === false) {
 		// 风控验证码检测：每次切题（点击下一题/题号）后、作答前执行，
 		// 出现 #homework-automation-risk-challenge 时挂起等待用户手动完成验证
@@ -1138,11 +1134,11 @@ async function runYktAnswerLoop(
 			break;
 		}
 		// 每轮重新计算未完成列表（提交后平台会更新状态标记）
-		const unfinished = getUnfinishedNavItems().filter(
-			(el) => !processedOrders.has(el.getAttribute('data-order') ?? '')
-		);
+		const navItems = Array.from(doc.querySelectorAll<HTMLElement>('.problems-aside .subject-item.J_order'));
+		const remaining = navItems.filter(isUnfinished);
+		const unfinished = remaining.filter((el) => !processedOrders.has(el.getAttribute('data-order') ?? ''));
 		if (unfinished.length === 0) {
-			completedAll = true;
+			completedAll = navItems.length > 0 && remaining.length === 0;
 			break;
 		}
 		// 当前激活的未完成题优先作答，否则点击切换到第一个未完成题
@@ -1178,11 +1174,14 @@ async function runYktAnswerLoop(
 		try {
 			const results = await worker.doWork({ enable_debug: BackgroundProject.scripts.dev.cfg.enable_answerer_debug });
 			allResults.push(...results);
+			if (worker.isClose) break;
 			const finished = !!results[0]?.result?.finish;
 			// 平台切换题目不会保存答案，必须每题作答后立即提交
 			if (finished) {
 				const submitted = await submitYktCurrentQuestion(doc, order);
-				if (!submitted) {
+				if (submitted) {
+					submittedCount++;
+				} else {
 					$console.warn(`[answer] 本题提交失败: ${marker}`);
 				}
 			}
@@ -1194,7 +1193,7 @@ async function runYktAnswerLoop(
 			break;
 		}
 	}
-	return { results: allResults, completedAll };
+	return { results: allResults, completedAll, submittedCount };
 }
 
 /**
@@ -1209,19 +1208,18 @@ function createYktEmbeddedWorkLoop(opts: CommonWorkOptions, doc: Document, onDon
 	const { worker, questionRootRef } = createYktAnswerWorker(opts);
 	dynamicWorkTips(worker);
 	(async () => {
-		const { results, completedAll } = await runYktAnswerLoop(worker, questionRootRef, doc);
+		const { results, completedAll, submittedCount } = await runYktAnswerLoop(worker, questionRootRef, doc);
 		worker.emit('done');
 
 		// 平台切换题目不会保存答案，作答循环中已逐题提交。
 		// 未全部完成时给出醒目提示，由用户手动处理剩余题目
-		const finishCount = results.filter((r) => r.result?.finish).length;
 		if (!completedAll) {
 			$message.warn({
-				content: `题目未全部完成（已作答提交 ${finishCount}/${results.length} 题），请手动检查剩余题目。`,
+				content: `题目未全部完成（本次确认提交 ${submittedCount}/${results.length} 题），请手动检查剩余题目。`,
 				duration: 60
 			});
 		} else {
-			$message.success({ content: `作业完成，全部 ${finishCount} 题已作答并逐题提交。` });
+			$message.success({ content: `作业已全部提交，本次确认提交 ${submittedCount} 题。` });
 		}
 		onDone();
 	})();
@@ -1397,7 +1395,9 @@ async function ai_watch(options: { volume: number; playbackRate: number }) {
  */
 function examination(opts: CommonWorkOptions) {
 	$message.info(`开始考试`);
-	CommonProject.scripts.workResults.methods.init();
+	CommonProject.scripts.workResults.methods.init({
+		questionPositionSyncHandlerType: 'yuketang_exam'
+	});
 
 	const redundanceWords = opts.redundanceWordsText.split('\n').filter(Boolean);
 	const titleTransform = (titles: (HTMLElement | undefined)[]) =>
@@ -1419,6 +1419,17 @@ function examination(opts: CommonWorkOptions) {
 					.map((node) => extractYktAIContent(node).text)
 					.join('\n')
 			: titleTransform(titles);
+	const optionsTransform = (elements: any, ctx: WorkContext<any>, forAI: boolean) => {
+		ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
+		if (ctx.type === 'completion') {
+			ctx.elements.options = elements.textareas;
+			return '';
+		}
+		const items: { text: string; images: string[] }[] = (elements.options ?? [])
+			.filter(Boolean)
+			.map((option: HTMLElement) => (forAI ? extractYktAIContent(option) : extractTextWithImages(option)));
+		return { text: items.map((item) => item.text).join('\n'), images: items.flatMap((item) => item.images), items };
+	};
 
 	const createAnswerer = (wrappers: CommonWorkOptions['answererWrappers'], forAI: boolean) =>
 		createCommonAnswerer({
@@ -1433,17 +1444,11 @@ function examination(opts: CommonWorkOptions) {
 				return '';
 			},
 			// Plus 原生 AI 必须在发起请求前拿到网页题型、逐项选项与实际空位。
-			optionsTransform: (elements, ctx) => {
-				ctx.type = parseYktQuestionType(elements.type?.[0]?.textContent ?? '');
-				if (ctx.type === 'completion') {
-					ctx.elements.options = elements.textareas;
-					return '';
-				}
-				const items: { text: string; images: string[] }[] = (elements.options ?? [])
-					.filter(Boolean)
-					.map((option: HTMLElement) => (forAI ? extractYktAIContent(option) : extractTextWithImages(option)));
-				return { text: items.map((item) => item.text).join('\n'), images: items.flatMap((item) => item.images), items };
-			},
+			optionsTransform: (elements, ctx) => optionsTransform(elements, ctx, forAI),
+			bankTitleTransform: forAI ? (elements) => titleTransform(elements.title || []) : undefined,
+			bankOptionsTransform: forAI ? (elements, ctx) => optionsTransform(elements, ctx, false) : undefined,
+			bankOptionText: (option, index, ctx) =>
+				ctx.type === 'judgement' ? ['对', '错'][index] || '' : extractTextWithImages(option).text,
 			answererWrappers: wrappers,
 			period: opts.period
 		});
@@ -1457,13 +1462,21 @@ function examination(opts: CommonWorkOptions) {
 		return (await Promise.all(pending)).flat();
 	};
 
+	const clickExamOption = (option: HTMLElement | undefined) => {
+		const label = option?.querySelector('label');
+		if (!option || !label) throw new Error('未找到雨课堂考试的选项控件。');
+		if (label.classList.contains('is-checked') || option.querySelector('.el-icon-check')) return false;
+		label.click();
+		return true;
+	};
+
 	// 这里跟章节测试的连线题不一样，章节测试是新版连线题
 	/** 新建答题器 */
 	const worker = new OCSWorker({
 		root: '.exam-main--content .subject-item',
 		elements: {
-			title: '.clearfix.exam-font .custom_ueditor_cn_body',
-			options: 'ul.list-unstyled li .custom_ueditor_cn_body',
+			title: 'h3.clearfix.exam-font,h4.clearfix.exam-font,h5.clearfix.exam-font,h6.clearfix.exam-font',
+			options: 'ul.list-unstyled li',
 			type: '.item-type',
 			textareas: (root) => {
 				// 主观题为 UEditor 富文本编辑器（iframe 作为填充目标）；
@@ -1504,21 +1517,21 @@ function examination(opts: CommonWorkOptions) {
 			// 通用单选多选题
 			if (type && (type === 'multiple' || type === 'single')) {
 				const resolver = createDefaultQuestionResolver(ctx, (o) => extractTextWithImages(o).text)[type];
-				return await resolver(searchInfos, elements.options as HTMLElement[], async (type, answer, option) => {
-					if (!option?.querySelector('.el-icon-check')) {
-						option.click();
-						await $.sleep(500);
-					}
+				return await resolver(searchInfos, elements.options as HTMLElement[], async (_type, _answer, option) => {
+					if (clickExamOption(option)) await $.sleep(500);
 				});
 			}
 			// 判断题处理
 			else if (type && type === 'judgement') {
-				if (opts.answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble)) {
+				const fallbackBankMatched =
+					opts.answererWrappers.some((wrapper) => wrapper.fallbackBanks?.length) &&
+					!searchInfos.some((info) => info.ai || info.ensemble);
+				if (!fallbackBankMatched && opts.answererWrappers.some((wrapper) => wrapper.ai || wrapper.aiEnsemble)) {
 					return createDefaultQuestionResolver(ctx, (option) => extractTextWithImages(option).text).judgement(
 						searchInfos,
 						elements.options as HTMLElement[],
 						async (_type, _answer, option) => {
-							if (!option?.querySelector('.el-icon-check')) option.click();
+							clickExamOption(option);
 						}
 					);
 				}
@@ -1527,7 +1540,7 @@ function examination(opts: CommonWorkOptions) {
 				const result = resolveJudgement(answersGroup, optionTexts);
 				if (result.finish && result.option) {
 					const index = optionTexts.indexOf(result.option);
-					ctx.elements.options[index]?.click();
+					clickExamOption(ctx.elements.options[index]);
 					return { finish: true };
 				}
 				return { finish: false };

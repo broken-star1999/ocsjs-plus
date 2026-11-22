@@ -5,6 +5,8 @@ import ts from 'typescript';
 import { $, $$el } from 'easy-us';
 import { StringUtils } from '../packages/core/src/utils/string';
 import { createDefaultQuestionResolver } from '../packages/core/src/core/worker/question.resolver';
+import { domSearchAll } from '../packages/core/src/core/utils/dom';
+import { resolveJudgement } from '../packages/core/src/core/worker/resolvers/judgement';
 import { AnswerWrapperHandlerConfig as builtConfig } from '../packages/core';
 import { AnswerWrapperHandlerConfig } from '../packages/core/src/core/answer-wrapper/answer.wrapper.handler';
 import {
@@ -38,6 +40,8 @@ class CaptureWorker {
 }
 const noop = () => {};
 const displayedTitles: string[] = [];
+let positionSyncHandler: string | undefined;
+let bankJudgementCalls = 0;
 const deps = {
 	OCSWorker: CaptureWorker,
 	$,
@@ -49,14 +53,29 @@ const deps = {
 	removeRedundantWords,
 	createDefaultQuestionResolver,
 	$message: { info: noop, error: noop },
-	CommonProject: { scripts: { workResults: { methods: { init: noop, fillAll: noop, update: noop } } } },
+	CommonProject: {
+		scripts: {
+			workResults: {
+				methods: {
+					init: (opts?: { questionPositionSyncHandlerType: string }) => {
+						positionSyncHandler = opts?.questionPositionSyncHandlerType;
+					},
+					fillAll: noop,
+					update: noop
+				}
+			}
+		}
+	},
 	BackgroundProject: { scripts: { dev: { cfg: { enable_answerer_debug: false } } } },
 	simplifyWorkResult: (value: any, transform: (titles: HTMLElement[]) => string) => {
 		const question = transform(value.ctx?.elements.title || []);
 		displayedTitles.push(question);
 		return { question };
 	},
-	resolveJudgement: () => assert.fail('native judgement must use native provenance'),
+	resolveJudgement: (...args: Parameters<typeof resolveJudgement>) => {
+		bankJudgementCalls++;
+		return resolveJudgement(...args);
+	},
 	fillYktUEditor: noop,
 	Event: window.Event
 };
@@ -67,6 +86,91 @@ const factorySource = ts.transpileModule(
 	{ compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }
 ).outputText;
 const factory = new Function(...Object.keys(deps), factorySource)(...Object.values(deps));
+const chapterAssignmentSource = ts.transpileModule(
+	[
+		'currentYktQuestionMarker',
+		'submitYktCurrentQuestion',
+		'waitYktQuestionReady',
+		'waitYktCaptcha',
+		'waitYktWorkConfirmDialog',
+		'runYktAnswerLoop',
+		'createYktEmbeddedWorkLoop'
+	]
+		.map((name) => declaration(yktPath, name))
+		.join('\n') + '\ncreateYktEmbeddedWorkLoop;',
+	{ compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None } }
+).outputText;
+
+async function chapterAssignment(input: {
+	finish?: boolean;
+	skipped?: boolean;
+	confirmation?: 'graded' | 'ungraded';
+	noNavigation?: boolean;
+	alreadySubmitted?: boolean;
+	closeDuringWork?: boolean;
+}) {
+	const doc = document.implementation.createHTMLDocument('Offline chapter assignment');
+	doc.body.innerHTML = `
+		<aside class="problems-aside">
+			<div class="subject-item J_order" data-order="1"><span class="text-status">未批改</span></div>
+			<div class="subject-item J_order active" data-order="2"></div>
+		</aside>
+		<div class="container-problem"><div class="subject-item">
+			<div class="item-type">第 2 题</div><div class="problem-body">测试题目</div>
+		</div></div>
+		<div class="problem-box"><button class="el-button--primary">提交</button></div>
+	`;
+	const current = doc.querySelector('[data-order="2"]')!;
+	if (input.alreadySubmitted) current.innerHTML = '<span class="icon-status"></span>';
+	if (input.noNavigation) doc.querySelector('aside')!.remove();
+
+	let clicks = 0;
+	doc.querySelector('button')!.addEventListener('click', () => {
+		clicks++;
+		if (input.confirmation === 'graded') current.innerHTML = '<span class="icon-status"></span>';
+		if (input.confirmation === 'ungraded') current.innerHTML = '<span class="text-status">未批改</span>';
+	});
+
+	const questionRootRef: HTMLElement[] = [];
+	let attempts = 0;
+	const worker = {
+		isClose: false,
+		async doWork() {
+			attempts++;
+			assert.equal(questionRootRef.length, 1);
+			this.isClose = !!input.closeDuringWork;
+			return [{ skipped: input.skipped, result: { finish: input.finish } }];
+		},
+		emit(event: string) {
+			assert.equal(event, 'done');
+		}
+	};
+	const success: string[] = [];
+	const warnings: string[] = [];
+	let elapsed = 0;
+	const createLoop = vm.runInNewContext(chapterAssignmentSource, {
+		...deps,
+		Date: { now: () => elapsed },
+		$: {
+			async sleep(ms: number) {
+				elapsed += ms;
+			}
+		},
+		$console: { warn: noop, error: noop },
+		$message: {
+			success: ({ content }: { content: string }) => success.push(content),
+			warn: ({ content }: { content: string }) => warnings.push(content)
+		},
+		createYktAnswerWorker: () => ({ worker, questionRootRef }),
+		dynamicWorkTips: noop,
+		ensureYktFontDecrypt: noop,
+		decryptYktNow: noop,
+		YKT_ENCRYPTED_SELECTOR: '.encrypted'
+	});
+	await new Promise<void>((done) => createLoop({}, doc, done));
+	return { attempts, clicks, success, warnings };
+}
+
 const runtime = globalThis as any;
 const old = {
 	request: runtime.GM_xmlhttpRequest,
@@ -83,6 +187,10 @@ let pendingReplies: (() => void)[] = [];
 let requestCount = 0;
 runtime.GM_xmlhttpRequest = (request: any) => {
 	requestCount++;
+	if (request.url === 'https://sync-540.invalid/bank') {
+		request.onload({ status: 200, responseText: JSON.stringify({ answer: answer.join('#') }) });
+		return;
+	}
 	assert.equal(request.url, 'https://sync-540.invalid/v1/chat/completions');
 	const body = JSON.parse(request.data);
 	const content = body.messages[1].content;
@@ -111,38 +219,58 @@ const wrapper = {
 	handler: '',
 	ai: { endpoint: 'https://sync-540.invalid/v1', model: 'fixture', authMode: 'none', vision: true }
 };
+const bankWrapper = {
+	...wrapper,
+	ai: undefined,
+	url: 'https://sync-540.invalid/bank',
+	handler: 'return response => ["传统题库判断题", response.answer]'
+};
 async function test(name: string, run: () => any) {
 	await run();
 	checks++;
 	console.log('PASS ' + name);
 }
-async function exam(type: string, options: string[], expected: string[], stem = '网页题干', blanks = 0) {
+function examMarkup(type: string, options: string[], stem: string, blanks = 0) {
+	return (
+		`<div class="item-type">${type}</div><h4 class="clearfix exam-font">${stem}</h4>` +
+		'<ul class="list-unstyled">' +
+		options.map((text) => `<li><label>${text}</label></li>`).join('') +
+		'</ul>' +
+		'<input class="blank-item-dynamic" placeholder="输入答案">'.repeat(blanks)
+	);
+}
+function recordExamClicks(root: HTMLElement) {
+	const clicks: number[] = [];
+	root.querySelectorAll('li > label').forEach((label, index) => {
+		label.addEventListener('click', (event) => {
+			if (event.target === label) clicks.push(index);
+		});
+	});
+	return clicks;
+}
+async function exam(
+	type: string,
+	options: string[],
+	expected: string[],
+	stem = '网页题干',
+	blanks = 0,
+	answererWrappers: (typeof wrapper | typeof bankWrapper)[] = [wrapper]
+) {
 	answer = expected;
 	const root = document.createElement('section');
-	root.innerHTML =
-		`<div class="item-type">${type}</div><h3>${stem}</h3>` +
-		options.map((text) => `<label>${text}</label>`).join('') +
-		'<input>'.repeat(blanks);
-	const elements = {
-		title: [root.querySelector('h3')],
-		type: [root.querySelector('.item-type')],
-		options: [...root.querySelectorAll('label')],
-		textareas: [...root.querySelectorAll('input')]
-	};
-	const clicks: number[] = [];
-	elements.options.forEach(
-		(node, index) =>
-			(node.onclick = () => {
-				clicks.push(index);
-			})
-	);
+	root.innerHTML = examMarkup(type, options, stem, blanks);
+	// The browser-env fixture lacks innerText, which the traditional answerer reads.
+	const heading = root.querySelector('h4')!;
+	Object.defineProperty(heading, 'innerText', { get: () => heading.textContent });
+	const clicks = recordExamClicks(root);
 	const worker = factory({
-		answererWrappers: [wrapper],
+		answererWrappers,
 		period: 0,
 		thread: 1,
 		answerSeparators: '#',
 		redundanceWordsText: ''
 	});
+	const elements = domSearchAll(worker.opts.elements, root);
 	const ctx: any = { root, elements, searchInfos: [], type: undefined };
 	ctx.searchInfos = await worker.opts.answerer(elements, ctx);
 	assert.equal(ctx.searchInfos[0].error, undefined);
@@ -218,15 +346,9 @@ async function until(predicate: () => unknown) {
 function lifecycle(type = '单选题', wrappers: any[] = [wrapper]) {
 	const host = document.createElement('section');
 	host.className = 'exam-main--content';
-	host.innerHTML = `<section class="subject-item"><div class="item-type">${type}</div><div class="clearfix exam-font"><div class="custom_ueditor_cn_body">完整任务题干</div></div><ul class="list-unstyled"><li><div class="custom_ueditor_cn_body">B</div></li><li><div class="custom_ueditor_cn_body">正确选项</div></li></ul></section>`;
+	host.innerHTML = `<section class="subject-item">${examMarkup(type, ['B', '正确选项'], '完整任务题干')}</section>`;
 	document.body.append(host);
-	const clicks: number[] = [];
-	host.querySelectorAll<HTMLElement>('li .custom_ueditor_cn_body').forEach(
-		(node, index) =>
-			(node.onclick = () => {
-				clicks.push(index);
-			})
-	);
+	const clicks = recordExamClicks(host);
 	answer = ['B'];
 	const worker: LifecycleWorker = lifecycleFactory({
 		answererWrappers: wrappers,
@@ -406,16 +528,62 @@ async function main() {
 		assert.equal(value.payload.type, 'multiple');
 		assert.deepEqual(value.clicks, [0, 2]);
 	});
-	await test('new YKT exam judgement does not enter the traditional text-only matcher', async () => {
+	await test('new YKT exam native judgement uses its own matcher and clicks the nested label', async () => {
+		const callsBefore = bankJudgementCalls;
 		const value = await exam('判断题', ['对', '错'], ['错']);
 		assert.equal(value.payload.type, 'judgement');
+		assert.equal(bankJudgementCalls, callsBefore);
+		assert.equal(value.result.finish, true);
 		assert.deepEqual(value.clicks, [1]);
+	});
+	await test('new YKT exam traditional judgement clicks the same nested label', async () => {
+		const callsBefore = bankJudgementCalls;
+		const value = await exam('判断题', ['对', '错'], ['错'], '传统题库判断题', 0, [bankWrapper]);
+		assert.equal(bankJudgementCalls, callsBefore + 1);
+		assert.equal(value.result.finish, true);
+		assert.deepEqual(value.clicks, [1]);
+	});
+	await test('new YKT exam does not toggle options with either checked marker', async () => {
+		const value = await exam('多选题', ['已有答案', '另一已有答案', '新答案'], ['ABC']);
+		assert.deepEqual(value.clicks, [0, 1, 2]);
+		value.elements.options[0].querySelector('label')!.classList.add('is-checked');
+		const check = document.createElement('i');
+		check.className = 'el-icon-check';
+		value.elements.options[1].append(check);
+		value.clicks.length = 0;
+		assert.equal((await value.worker.opts.work(value.ctx)).finish, true);
+		assert.deepEqual(value.clicks, [2]);
+	});
+	await test('new YKT exam registers the result handler that scrolls to the selected question', async () => {
+		const host = document.createElement('div');
+		host.className = 'exam-main--content';
+		host.innerHTML = '<div class="exercise-item"></div><div class="exercise-item"></div>';
+		document.body.append(host);
+		try {
+			const scrolls: [number, ScrollIntoViewOptions][] = [];
+			host.querySelectorAll<HTMLElement>('.exercise-item').forEach((item, index) => {
+				item.scrollIntoView = (opts) => scrolls.push([index, opts as ScrollIntoViewOptions]);
+			});
+			const state = declaration('packages/scripts/src/projects/common.ts', 'state');
+			const inline = ts.transpileModule(state + '\nreturn state.workResult.questionPositionSyncHandler;', {
+				compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.None }
+			}).outputText;
+			const handlers = new Function('document', inline)(document);
+			positionSyncHandler = undefined;
+			await exam('单选题', ['一', '二'], ['A']);
+			assert.equal(positionSyncHandler, 'yuketang_exam');
+			handlers[positionSyncHandler!](1);
+			handlers[positionSyncHandler!](6);
+			assert.deepEqual(scrolls, [[1, { behavior: 'smooth', block: 'center' }]]);
+		} finally {
+			host.remove();
+		}
 	});
 	await test('new YKT exam completion uses one actual input for two illustrative underscores', async () => {
 		const value = await exam('填空题', [], ['26'], 'range(__,-4,-2) 初值为__', 1);
 		assert.equal(value.payload.type, 'completion');
 		assert.equal(value.payload.blank_count, 1);
-		assert.equal(value.elements.textareas[0].value, '26');
+		assert.equal((value.elements.textareas[0] as HTMLInputElement).value, '26');
 		assert.equal(value.result.finish, true);
 	});
 	await test('new YKT exam preserves a pure formula-image stem using its LaTeX', async () => {
@@ -446,6 +614,35 @@ async function main() {
 		);
 		assert.deepEqual(value.clicks, [1]);
 	});
+	await test('YKT chapter completion counts platform-confirmed submissions and leaves prior answers alone', async () => {
+		for (const confirmation of ['graded', 'ungraded'] as const) {
+			const report = await chapterAssignment({ finish: true, confirmation });
+			assert.equal(report.attempts, 1);
+			assert.equal(report.clicks, 1);
+			assert.deepEqual(report.warnings, []);
+			assert.match(report.success[0], /本次确认提交 1 题/);
+		}
+		const alreadySubmitted = await chapterAssignment({ alreadySubmitted: true });
+		assert.equal(alreadySubmitted.attempts, 0);
+		assert.equal(alreadySubmitted.clicks, 0);
+		assert.match(alreadySubmitted.success[0], /本次确认提交 0 题/);
+	});
+	await test('YKT chapter completion stays pending after skip, miss, failed submit, or closure', async () => {
+		for (const input of [{ skipped: true }, {}, { finish: true }, { finish: true, closeDuringWork: true }]) {
+			const report = await chapterAssignment(input);
+			assert.equal(report.attempts, 1);
+			assert.equal(report.clicks, input.finish && !input.closeDuringWork ? 2 : 0);
+			assert.deepEqual(report.success, []);
+			assert.match(report.warnings[0], /本次确认提交 0\/1 题/);
+		}
+	});
+	await test('YKT chapter with missing navigation never reports submission success', async () => {
+		const report = await chapterAssignment({ noNavigation: true });
+		assert.equal(report.attempts, 0);
+		assert.equal(report.clicks, 0);
+		assert.deepEqual(report.success, []);
+		assert.equal(report.warnings.length, 1);
+	});
 	await test('upstream smart final-tab navigation no longer invokes two navigation mechanisms', async () => {
 		assert.deepEqual(await navigation('job', true), ['chapterClick']);
 	});
@@ -460,7 +657,7 @@ async function main() {
 		assert.equal(extractMathJaxText(node.firstElementChild!), '(2)/(7)-x');
 		assert.equal(extractTextWithImages(node).text.trim(), '(2)/(7)-x');
 	});
-	console.log(`Upstream 5.4.0 / Plus integration: ${checks} scenarios passed (offline).`);
+	console.log(`Upstream 5.4.x / Plus integration: ${checks} scenarios passed (offline).`);
 }
 main()
 	.catch((error) => {

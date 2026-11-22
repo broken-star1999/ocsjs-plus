@@ -39,7 +39,7 @@ export interface AIEnsembleConfig {
 }
 
 export interface AIEnsembleResult {
-	status: 'running' | 'agreed' | 'summarized' | 'selected' | 'review' | 'confirmed';
+	status: 'running' | 'agreed' | 'summarized' | 'selected' | 'review' | 'confirmed' | 'skipped';
 	reason: string;
 	members: { name: string; answers?: string[]; normalizedAnswers?: string[]; error?: string; ai?: AICallDetails }[];
 	progress?: { stage: 'members' | 'summary' | 'done'; completed: number; total: number };

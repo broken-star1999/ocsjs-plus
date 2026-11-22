@@ -69,6 +69,7 @@ export interface AnswererListHandlers {
 	isDisabled: (name: string) => boolean;
 	/** 切换题库启用/停用（disabled=true 表示切换后为停用状态） */
 	onToggle: (name: string, disabled: boolean) => void;
+	onMove?: (bank: AnswererWrapper, offset: number) => void;
 }
 
 /** 展开箭头 SVG（代替 details/summary 的默认箭头，旋转动画由 CSS 控制） */
@@ -181,7 +182,7 @@ export function createAnswererWrapperList(aw: AnswererWrapper[], handlers: Answe
 			h('span', { className: 'aw-card-value' }, [value])
 		]);
 
-	return aw.map((item) => {
+	return aw.map((item, index) => {
 		/** 状态标签组：状态提示（HTTP 状态码）+ 延迟，分两个标签显示（非 GM 环境不创建） */
 		const statusEl = canProbe
 			? h('span', { className: 'aw-card-status-group' }, [
@@ -261,6 +262,25 @@ export function createAnswererWrapperList(aw: AnswererWrapper[], handlers: Answe
 			'🏠'
 		);
 		homeLink.onclick = (e) => e.stopPropagation();
+		const moveButtons =
+			handlers.onMove && aw.length > 1
+				? [-1, 1].map((offset) => {
+						const title = offset < 0 ? '上移' : '下移';
+						const button = h('button', {
+							type: 'button',
+							className: 'base-style-button-secondary',
+							disabled: index + offset < 0 || index + offset >= aw.length,
+							title: `${title} ${item.name}`,
+							ariaLabel: `${title} ${item.name}`,
+							textContent: offset < 0 ? '↑' : '↓'
+						});
+						button.onclick = (event) => {
+							event.stopPropagation();
+							handlers.onMove?.(item, offset);
+						};
+						return button;
+				  })
+				: [];
 
 		/** 卡片头：主页图标 + 名称 + 域名徽标 + 状态徽标 + 右侧开关 + 箭头，点击整行展开/收起 */
 		const card = createAccordionCard({
@@ -271,7 +291,7 @@ export function createAnswererWrapperList(aw: AnswererWrapper[], handlers: Answe
 				h('span', { className: 'aw-card-badge', title: item.url }, host),
 				...(statusEl ? [statusEl] : [])
 			],
-			headerTrailing: [switchWrapper],
+			headerTrailing: [...moveButtons, switchWrapper],
 			body: [
 				h('ul', { className: 'aw-card-rows' }, [
 					row('名字', item.name),

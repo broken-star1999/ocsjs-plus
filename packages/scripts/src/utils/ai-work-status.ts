@@ -12,9 +12,10 @@ export interface AIWorkStatusOptions {
 /** Global errors block a task; a missing rule dependency only affects its own question type. */
 export function inspectAIWorkConfiguration(options: AIWorkStatusOptions) {
 	const wrappers = options.answererWrappers;
+	const fallbackBankCount = wrappers.length === 1 ? wrappers[0].fallbackBanks?.length || 0 : 0;
 	const ai = wrappers.flatMap((wrapper) => (wrapper.ai ? [wrapper.ai] : []));
 	const ensembles = wrappers.flatMap((wrapper) => (wrapper.aiEnsemble ? [wrapper.aiEnsemble] : []));
-	const isAI = options.aiEnabled === true || ai.length > 0 || ensembles.length > 0;
+	const isAI = options.aiEnabled === true || ai.length > 0 || ensembles.length > 0 || fallbackBankCount > 0;
 	let error = !wrappers.length
 		? isAI
 			? '请先添加并选择一个已启用的普通模式模型，或完成高级模式配置。'
@@ -70,6 +71,13 @@ export function inspectAIWorkConfiguration(options: AIWorkStatusOptions) {
 		ensembles.length ? `${group.name} × ${group.count}` : group.name
 	);
 	const baseCalls = models.length;
+	if (fallbackBankCount) {
+		if (!baseCalls) error ||= '请先添加并选择兜底模型。';
+		if (error) {
+			warnings.unshift('AI 兜底暂不可用：' + error);
+			error = '';
+		}
+	}
 	const summaryCalls = ensembles.filter(
 		(config) => config.summary && (config.rule?.includes('summary') || config.subjectiveRule === 'summary')
 	).length;
@@ -104,6 +112,7 @@ export function inspectAIWorkConfiguration(options: AIWorkStatusOptions) {
 		error,
 		warnings,
 		isAI,
+		fallbackBankCount,
 		advanced: ensembles.length > 0 || options.aiAnswerMode === 'advanced',
 		names,
 		baseCalls,
@@ -141,17 +150,26 @@ export function createAIWorkSummary(options: {
 		root.replaceChildren(
 			h(
 				'strong',
-				`${state.isAI ? (state.advanced ? '高级模式' : '普通模式') : '题库模式'} · ${
-					state.ready ? (state.warnings.length ? '部分规则需检查' : '已就绪') : '尚未就绪'
-				}`
+				`${
+					state.fallbackBankCount
+						? '题库优先，AI 兜底'
+						: state.isAI
+						? state.advanced
+							? '高级模式'
+							: '普通模式'
+						: '题库模式'
+				} · ${state.ready ? (state.warnings.length ? '部分规则需检查' : '已就绪') : '尚未就绪'}`
 			),
 			...(state.error ? [h('div', { style: { color: '#c0392b' } }, state.error)] : []),
+			...(state.fallbackBankCount
+				? [h('div', `按顺序查询 ${state.fallbackBankCount} 个题库，拿不到可用答案时再请求 AI。`)]
+				: []),
 			...(state.isAI && state.names.length ? [h('div', '参与模型：' + state.names.join('、'))] : []),
-			...(state.isAI && state.ready
+			...(state.isAI && state.ready && state.baseCalls
 				? [
 						h(
 							'div',
-							`每题 ${state.baseCalls} 次基础作答${
+							`${state.fallbackBankCount ? '进入 AI 兜底后，每题' : '每题'} ${state.baseCalls} 次基础作答${
 								state.summaryCalls ? `，最多另有 ${state.summaryCalls} 次总结` : '，不调用总结模型'
 							}`
 						),

@@ -387,6 +387,28 @@ async function main() {
 	assert.equal(unauthorized.ai?.call.status, 'error');
 	runtime.GM_xmlhttpRequest = (request: any) => request.ontimeout();
 	assert.match((await searchAIAnswer(config, question, 1)).error || '', /超时/);
+	let abortedRequests = 0;
+	runtime.GM_xmlhttpRequest = (request: any) => {
+		sent = request;
+		return {
+			abort: () => {
+				abortedRequests++;
+				request.onabort();
+			}
+		};
+	};
+	let testDeadline: ReturnType<typeof setTimeout> | undefined;
+	const stalled = await Promise.race([
+		searchAIAnswer(config, question, 1000),
+		new Promise<never>((_, reject) => {
+			testDeadline = setTimeout(() => reject(new Error('AI request stayed pending without a GM callback')), 2500);
+		})
+	]).finally(() => clearTimeout(testDeadline));
+	assert.match(stalled.error || '', /超时/);
+	assert.equal(abortedRequests, 1);
+	assert.equal(stalled.ai?.call.status, 'error');
+	sent.onload({ status: 200, responseText: '{"choices":[{"message":{"content":"late answer"}}]}' });
+	assert.equal(stalled.results.length, 0);
 	runtime.GM_xmlhttpRequest = (request: any) =>
 		request.onload({
 			status: 200,

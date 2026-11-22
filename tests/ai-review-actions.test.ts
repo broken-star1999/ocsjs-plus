@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 import { $, cors } from 'easy-us';
-import { OCSWorker } from '../packages/core/src/core/worker/worker';
+import { OCSWorker, CustomOCSWorker } from '../packages/core/src/core/worker/worker';
 import { enableSingleQuestionRetry } from '../packages/core/src/core/worker/single-question-retry';
 import type { QuestionTypes, WorkResult } from '../packages/core/src/core/worker/interface';
 import type { SearchInformation } from '../packages/core/src/core/answer-wrapper/interface';
 import { createCXQuestionRetryAdapter } from '../packages/scripts/src/utils/cx-question-retry';
 import {
 	createManualReviewControl,
+	createUnansweredQuestionControl,
 	registerReviewActions,
-	requestReviewAction
+	requestReviewAction,
+	reconcileWorkResultActions,
+	serializeManualReview
 } from '../packages/scripts/src/utils/question-retry-control';
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -185,6 +188,186 @@ async function test(name: string, action: () => Promise<void>) {
 }
 
 async function main() {
+	await test('skip waits for the owning page store, preserves review details, and allows a later retry', async () => {
+		const f = await fixture();
+		const gate = deferred();
+		try {
+			const oldConfirm = f.result().confirmReview!;
+			const before = clone(f.result().ctx!.searchInfos[0].ensemble!.members);
+			const store = f.worker.opts.onResultsUpdate;
+			f.worker.opts.onResultsUpdate = async (...args) => {
+				if (args[0].skipped) await gate.promise;
+				await store?.(...args);
+			};
+			f.worker.emit('stop');
+			const request = f.result().skip!();
+			await assert.rejects(f.result().retry!, /等待当前/);
+			await assert.rejects(oldConfirm, /正在处理/);
+			assert.equal(f.settled(), false);
+			gate.resolve();
+			await request;
+			assert.equal(f.settled(), false, 'skip does not resume a paused task');
+			f.worker.emit('continuate');
+			await f.task;
+			assert.equal(f.result().skipped, true);
+			assert.equal(f.result().result?.finish, false);
+			assert.equal(f.persisted()[0].ensemble?.status, 'skipped');
+			assert.deepEqual(f.persisted()[0].ensemble?.members, before);
+			assert.deepEqual(f.values(), [false, false, false, false]);
+			await assert.rejects(oldConfirm, /跳过/);
+			await assert.rejects(f.result().retry!, /等待人工评判/);
+			assert.equal(f.result().ctx!.searchInfos[0].ensemble?.status, 'review');
+			await f.result().skip!();
+			assert.equal(f.result().ctx!.searchInfos[0].ensemble?.status, 'skipped');
+			f.setResponse(agreed(['B']));
+			await f.result().retry!();
+			assert.equal(f.result().skipped, undefined);
+			assert.equal(f.result().result?.finish, true);
+			assert.deepEqual(f.values(), [false, true, false, false]);
+		} finally {
+			gate.resolve();
+			await f.cleanup();
+		}
+	});
+
+	await test('an unsuccessful skip store restores the review and the worker continues to wait', async () => {
+		const f = await fixture('single', false);
+		try {
+			const store = f.worker.opts.onResultsUpdate;
+			f.worker.opts.onResultsUpdate = async (...args) => {
+				if (args[0].skipped) throw new Error('offline skip store failed');
+				await store?.(...args);
+			};
+			await assert.rejects(f.result().skip!, /offline skip store failed/);
+			assert.equal(f.result().skipped, undefined);
+			assert.equal(f.result().result?.finish, false);
+			assert.equal(f.result().ctx!.searchInfos[0].ensemble?.status, 'review');
+			assert.equal(f.settled(), false);
+			await f.result().confirmReview!();
+			await f.task;
+			assert.equal(f.result().result?.finish, true);
+		} finally {
+			await f.cleanup();
+		}
+	});
+
+	await test('ordinary no-answer can be skipped without changing later answers or the upload rate', async () => {
+		const roots = ['无结果', '有结果'].map((text) => {
+			const root = document.createElement('section');
+			root.innerHTML = `<h3>${text}</h3><label>A. 正确选项</label><label>B. 其他选项</label>`;
+			document.body.append(root);
+			return root;
+		});
+		let fills = 0;
+		const worker = new OCSWorker({
+			root: roots,
+			elements: { title: 'h3', options: 'label' },
+			answerer: async (elements) =>
+				elements.title?.[0]?.textContent === '有结果'
+					? [{ name: '题库', results: [{ question: '有结果', answer: 'A' }] }]
+					: [],
+			work: {
+				type: 'single',
+				optionText: (element) => element.textContent || '',
+				handler: () => {
+					fills++;
+				}
+			}
+		});
+		try {
+			const results = await worker.doWork();
+			await results[0].skip!();
+			assert.equal(results[0].skipped, true);
+			assert.equal(results[0].result?.finish, false);
+			assert.equal(results[1].result?.finish, true);
+			assert.equal(fills, 1);
+			await assert.rejects(results[1].skip!, /已完成/);
+			let outcome: [number, boolean] | undefined;
+			worker.uploadHandler({ results, type: 75, callback: (rate, allowed) => void (outcome = [rate, allowed]) });
+			assert.deepEqual(outcome, [50, false]);
+			worker.emit('close');
+			await assert.rejects(results[0].skip!, /失效/);
+		} finally {
+			worker.emit('close');
+			roots.forEach((root) => root.remove());
+		}
+	});
+
+	await test('custom worker skips request errors and releases its pending review', async () => {
+		let results: Parameters<NonNullable<CustomOCSWorker['opts']['onResultsUpdate']>>[2] = [];
+		const worker = new CustomOCSWorker({
+			period: 0,
+			questions: () => ['异常', '人工', '正常'].map((text) => ({ text, type: 'single' })),
+			answerer: (text) => {
+				if (text === '异常') throw new Error('离线接口错误');
+				return text === '人工' ? review() : agreed(['A']);
+			},
+			resolver: () => ({ finish: true }),
+			onResultsUpdate: (_result, _index, current) => {
+				results = current;
+			}
+		});
+		const task = worker.doWork();
+		try {
+			await until(() => results[2]?.resolved);
+			assert.equal(results[0].requested, true);
+			assert.equal(results[0].resolved, true);
+			assert.equal(results[0].finish, false);
+			await results[0]._skip!();
+			assert.equal(results[0].skipped, true);
+			assert.equal(results[0].error, '离线接口错误');
+			await results[1]._skip!();
+			await task;
+			assert.deepEqual(
+				results.map((result) => result.finish),
+				[false, false, true]
+			);
+			assert.equal(results[1].searchInfos[0].ensemble?.status, 'skipped');
+		} finally {
+			worker.emit('close');
+			await task;
+		}
+	});
+
+	await test('the skip control serializes across frames and rejects an action from a replaced result', async () => {
+		let skipped = 0;
+		const row = {
+			question: '失败题目',
+			type: 'single' as const,
+			requested: true,
+			resolved: true,
+			finish: false,
+			searchInfos: [],
+			_skip: async () => {
+				skipped++;
+			}
+		};
+		let current: (typeof stored)[];
+		const stored = serializeManualReview(row, async () => current);
+		current = [stored];
+		assert.equal(stored._skip, undefined);
+		const button = createUnansweredQuestionControl(stored)!.querySelector('button')!;
+		assert.equal(button.textContent, '跳过本题');
+		const handler = remoteHandlers.get(stored.skipControl!.frame)!;
+		cors.emit = (_name, args, callback) => {
+			Promise.resolve(handler(args!)).then((value) => callback!(value));
+		};
+		try {
+			const remote = { ...stored.skipControl!, frame: 'owner-frame' };
+			reconcileWorkResultActions(current);
+			await requestReviewAction(remote);
+			assert.equal(skipped, 1);
+			current = [];
+			reconcileWorkResultActions(current);
+			await assert.rejects(requestReviewAction(remote), /跳过入口已失效/);
+			assert.equal(skipped, 1);
+			assert.equal(createUnansweredQuestionControl({ ...stored, skipped: true }), undefined);
+			assert.equal(serializeManualReview({ ...row, resolved: false }).skipControl, undefined);
+		} finally {
+			cors.emit = originalEmit;
+		}
+	});
+
 	for (const type of ['single', 'multiple', 'judgement', 'completion'] as const)
 		await test('explicit candidate uses a validated replacement plan and releases review: ' + type, async () => {
 			const f = await fixture(type);
